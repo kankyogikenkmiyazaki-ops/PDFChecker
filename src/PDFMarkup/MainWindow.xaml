@@ -44,7 +44,8 @@
             <Separator />
 
             <StatusBarItem>
-                <TextBlock Text="ページ: -" />
+                <TextBlock x:Name="PageText"
+                        Text="ページ: -" />
             </StatusBarItem>
 
             <Separator />
