@@ -55,6 +55,17 @@ public sealed class PdfService
         return outputPath;
     }
 
+    // PDFのサイズを取得
+    public (double Width, double Height) GetPageSize(string filePath)
+    {
+        using var document = new PdfDocument(filePath, null);
+        using var page = document.Pages[0];
+
+        return (page.Width, page.Height);
+        
+    }
+    
+
     public string AddTestAnnotation(string filePath)
     {
         string directory =
@@ -279,6 +290,69 @@ public sealed class PdfService
         }
     }
 
+    public string? GetCharacterAt(
+        string filePath,
+        double pdfX,
+        double pdfY)
+    {
+        using var document =
+            new PdfDocument(filePath, null);
+
+        using var page =
+            document.Pages[0];
+
+        var textPage =
+            PDFium.FPDFText_LoadPage(page.Handle);
+
+        if (textPage.IsNull)
+        {
+            throw new InvalidOperationException(
+                "PDFの文字情報を読み込めませんでした。");
+        }
+
+        try
+        {
+            int charCount =
+                PDFium.FPDFText_CountChars(textPage);
+
+            for (int index = 0; index < charCount; index++)
+            {
+                PDFium.FPDFText_GetCharBox(
+                    textPage,
+                    index,
+                    out double left,
+                    out double right,
+                    out double bottom,
+                    out double top);
+
+                const double margin = 1.5;
+
+                bool hit =
+                    pdfX >= left - margin &&
+                    pdfX <= right + margin &&
+                    pdfY >= bottom - margin &&
+                    pdfY <= top + margin;
+
+                if (!hit)
+                {
+                    continue;
+                }
+
+                // この1文字だけ取得
+                return PDFium.FPDFText_GetText(
+                    textPage,
+                    index,
+                    1);
+            }
+
+            return null;
+        }
+        finally
+        {
+            PDFium.FPDFText_ClosePage(textPage);
+        }
+    }
+
     public string InspectTextPageType()
     {
         Type type =
@@ -310,4 +384,308 @@ public sealed class PdfService
 
         return result.ToString();
     }
+
+    public string? GetTextAt(
+        string filePath,
+        double pdfX,
+        double pdfY,
+        bool isRotated270)
+    {
+        using var document =
+            new PdfDocument(filePath, null);
+
+        using var page =
+            document.Pages[0];
+
+        var textPage =
+            PDFium.FPDFText_LoadPage(page.Handle);
+
+        if (textPage.IsNull)
+        {
+            throw new InvalidOperationException(
+                "PDFの文字情報を読み込めませんでした。");
+        }
+
+        try
+        {
+            int charCount =
+                PDFium.FPDFText_CountChars(textPage);
+
+            if (charCount <= 0)
+            {
+                return null;
+            }
+
+            const double clickMargin = 2.0;
+
+            int hitIndex = -1;
+
+            // クリックした文字のIndexを探す
+            for (int index = 0; index < charCount; index++)
+            {
+                bool success =
+                    PDFium.FPDFText_GetCharBox(
+                        textPage,
+                        index,
+                        out double left,
+                        out double right,
+                        out double bottom,
+                        out double top);
+
+                if (!success)
+                {
+                    continue;
+                }
+
+                bool hit =
+                    pdfX >= left - clickMargin &&
+                    pdfX <= right + clickMargin &&
+                    pdfY >= bottom - clickMargin &&
+                    pdfY <= top + clickMargin;
+
+                if (hit)
+                {
+                    hitIndex = index;
+                    break;
+                }
+            }
+
+            if (hitIndex < 0)
+            {
+                return null;
+            }
+
+            bool hitBoxSuccess =
+                PDFium.FPDFText_GetCharBox(
+                    textPage,
+                    hitIndex,
+                    out double hitLeft,
+                    out double hitRight,
+                    out double hitBottom,
+                    out double hitTop);
+
+            if (!hitBoxSuccess)
+            {
+                return null;
+            }
+
+            double hitWidth =
+                Math.Max(1.0, hitRight - hitLeft);
+
+            double hitHeight =
+                Math.Max(1.0, hitTop - hitBottom);
+
+            double hitCenterX =
+                (hitLeft + hitRight) / 2.0;
+
+            double hitCenterY =
+                (hitBottom + hitTop) / 2.0;
+
+            /*
+            * 縦向き・補正なし
+            *   同じ行の判定：Y座標
+            *   文字の進行方向：X座標
+            *
+            * 横向き・270度補正
+            *   同じ行の判定：X座標
+            *   文字の進行方向：Y座標
+            */
+            double hitLinePosition =
+                isRotated270
+                    ? hitCenterX
+                    : hitCenterY;
+
+            double hitAdvancePosition =
+                isRotated270
+                    ? hitCenterY
+                    : hitCenterX;
+
+            double lineSize =
+                isRotated270
+                    ? hitWidth
+                    : hitHeight;
+
+            double advanceSize =
+                isRotated270
+                    ? hitHeight
+                    : hitWidth;
+
+            // 同じ行とみなす位置の許容値
+            double lineTolerance =
+                Math.Max(2.0, lineSize * 0.8);
+
+            // 隣接文字の中心間距離の許容値
+            double gapTolerance =
+                Math.Max(6.0, advanceSize * 2.5);
+
+            int startIndex = hitIndex;
+            int endIndex = hitIndex;
+
+            // 左側、または文字列の前方向へ広げる
+            double previousAdvancePosition =
+                hitAdvancePosition;
+
+            for (int index = hitIndex - 1;
+                index >= 0;
+                index--)
+            {
+                string character =
+                    PDFium.FPDFText_GetText(
+                        textPage,
+                        index,
+                        1);
+
+                if (character.Contains('\r') ||
+                    character.Contains('\n'))
+                {
+                    break;
+                }
+
+                bool success =
+                    PDFium.FPDFText_GetCharBox(
+                        textPage,
+                        index,
+                        out double left,
+                        out double right,
+                        out double bottom,
+                        out double top);
+
+                if (!success)
+                {
+                    break;
+                }
+
+                double centerX =
+                    (left + right) / 2.0;
+
+                double centerY =
+                    (bottom + top) / 2.0;
+
+                double linePosition =
+                    isRotated270
+                        ? centerX
+                        : centerY;
+
+                double advancePosition =
+                    isRotated270
+                        ? centerY
+                        : centerX;
+
+                double lineDifference =
+                    Math.Abs(
+                        linePosition -
+                        hitLinePosition);
+
+                double characterDistance =
+                    Math.Abs(
+                        advancePosition -
+                        previousAdvancePosition);
+
+                if (lineDifference > lineTolerance ||
+                    characterDistance > gapTolerance)
+                {
+                    break;
+                }
+
+                startIndex = index;
+                previousAdvancePosition =
+                    advancePosition;
+            }
+
+            // 右側、または文字列の後方向へ広げる
+            previousAdvancePosition =
+                hitAdvancePosition;
+
+            for (int index = hitIndex + 1;
+                index < charCount;
+                index++)
+            {
+                string character =
+                    PDFium.FPDFText_GetText(
+                        textPage,
+                        index,
+                        1);
+
+                if (character.Contains('\r') ||
+                    character.Contains('\n'))
+                {
+                    break;
+                }
+
+                bool success =
+                    PDFium.FPDFText_GetCharBox(
+                        textPage,
+                        index,
+                        out double left,
+                        out double right,
+                        out double bottom,
+                        out double top);
+
+                if (!success)
+                {
+                    break;
+                }
+
+                double centerX =
+                    (left + right) / 2.0;
+
+                double centerY =
+                    (bottom + top) / 2.0;
+
+                double linePosition =
+                    isRotated270
+                        ? centerX
+                        : centerY;
+
+                double advancePosition =
+                    isRotated270
+                        ? centerY
+                        : centerX;
+
+                double lineDifference =
+                    Math.Abs(
+                        linePosition -
+                        hitLinePosition);
+
+                double characterDistance =
+                    Math.Abs(
+                        advancePosition -
+                        previousAdvancePosition);
+
+                if (lineDifference > lineTolerance ||
+                    characterDistance > gapTolerance)
+                {
+                    break;
+                }
+
+                endIndex = index;
+                previousAdvancePosition =
+                    advancePosition;
+            }
+
+            int length =
+                endIndex - startIndex + 1;
+
+            string result =
+                PDFium.FPDFText_GetText(
+                    textPage,
+                    startIndex,
+                    length);
+
+            string cleanedResult =
+                result
+                    .Replace("\r", "")
+                    .Replace("\n", "")
+                    .Trim();
+
+            return string.IsNullOrWhiteSpace(cleanedResult)
+                ? null
+                : cleanedResult;
+        }
+        finally
+        {
+            PDFium.FPDFText_ClosePage(textPage);
+        }
+    }    
+    
 }

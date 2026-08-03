@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using System.Windows;
 using System.Windows.Media.Imaging;
+using System.Windows.Input;
 
 namespace PdfDisplayTest;
 
@@ -10,6 +11,8 @@ public partial class MainWindow : Window
 {
     private readonly PdfService _pdfService = new();
     private string? _currentPdfPath;
+    private double _pdfPageWidth;
+    private double _pdfPageHeight;
 
     public MainWindow()
     {
@@ -37,6 +40,13 @@ public partial class MainWindow : Window
         try
         {
             int pageCount = _pdfService.GetPageCount(dialog.FileName);
+
+
+            var pageSize = _pdfService.GetPageSize(dialog.FileName);
+
+            _pdfPageWidth = pageSize.Width;
+            _pdfPageHeight = pageSize.Height;
+
             string bmpPath = _pdfService.RenderFirstPageToBmp(dialog.FileName);
 
             var image = new BitmapImage();
@@ -52,7 +62,7 @@ public partial class MainWindow : Window
             Title = $"PDF表示テスト - {fileName}";
 
             FilePathText.Text =
-                $"{dialog.FileName}　ページ数: {pageCount}　BMP: {bmpPath}";
+                $"PDF : {_pdfPageWidth:F2} × {_pdfPageHeight:F2}";
         }
         catch (Exception ex)
         {
@@ -135,6 +145,7 @@ public partial class MainWindow : Window
         }
     }
 
+    //文字抽出
     private void ExtractTextButton_Click(
         object sender,
         RoutedEventArgs e)
@@ -171,6 +182,7 @@ public partial class MainWindow : Window
         }
     }
 
+    //文字座標
     private void ExtractCharacterPositionsButton_Click(
         object sender,
         RoutedEventArgs e)
@@ -207,6 +219,114 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
-    }   
+    }
+
+    //マウスクリック
+    private void PdfImage_MouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (PdfImage.Source is not BitmapSource bitmap)
+        {
+            return;
+        }
+
+        if (_pdfPageWidth <= 0 || _pdfPageHeight <= 0)
+        {
+            MessageBox.Show("PDFページサイズが取得されていません。");
+            return;
+        }
+
+        Point point = e.GetPosition(PdfImage);
+
+        double imageControlWidth = PdfImage.ActualWidth;
+        double imageControlHeight = PdfImage.ActualHeight;
+
+        double bitmapWidth = bitmap.PixelWidth;
+        double bitmapHeight = bitmap.PixelHeight;
+
+        // Stretch="Uniform" の表示倍率
+        double scale = Math.Min(
+            imageControlWidth / bitmapWidth,
+            imageControlHeight / bitmapHeight);
+
+        // Imageコントロール内で実際に表示されている画像サイズ
+        double displayedWidth = bitmapWidth * scale;
+        double displayedHeight = bitmapHeight * scale;
+
+        // Uniformで中央配置されたことによる余白
+        double offsetX = (imageControlWidth - displayedWidth) / 2.0;
+        double offsetY = (imageControlHeight - displayedHeight) / 2.0;
+
+        // 画像の余白部分をクリックした場合
+        if (point.X < offsetX ||
+            point.X > offsetX + displayedWidth ||
+            point.Y < offsetY ||
+            point.Y > offsetY + displayedHeight)
+        {
+            MessageBox.Show("PDFページ外をクリックしました。");
+            return;
+        }
+
+        // 実際に表示されている画像内の座標
+        double imageX = point.X - offsetX;
+        double imageY = point.Y - offsetY;
+
+        // 0.0 ～ 1.0 の相対座標
+        double normalizedX = imageX / displayedWidth;
+        double normalizedY = imageY / displayedHeight;
+
+        // PDF座標へ変換
+        // WPFは左上原点、PDFは左下原点なのでYを反転
+        double pdfX = normalizedX * _pdfPageWidth;
+        double pdfY = _pdfPageHeight -
+                    normalizedY * _pdfPageHeight;
+
+        double textX;
+        double textY;
+        string mode;
+
+        bool isRotated270 =
+            _pdfPageWidth > _pdfPageHeight;
+
+        if (isRotated270)
+        {
+            textX =
+                _pdfPageHeight - pdfY;
+
+            textY =
+                pdfX;
+
+            mode = "横向き";
+        }
+        else
+        {
+            textX =
+                pdfX;
+
+            textY =
+                pdfY;
+
+            mode = "縦向き";
+        }
+
+        string? character =
+            _pdfService.GetCharacterAt(
+                _currentPdfPath!,
+                textX,
+                textY);
+
+        string? text =
+            _pdfService.GetTextAt(
+                _currentPdfPath!,
+                textX,
+                textY,
+                isRotated270);
+
+        FilePathText.Text =
+            $"{mode}　" +
+            $"文字={character ?? "なし"}　" +
+            $"文字列={text ?? "なし"}";
+            }
 
 }
