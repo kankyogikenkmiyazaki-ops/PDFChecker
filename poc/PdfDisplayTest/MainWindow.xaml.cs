@@ -2,8 +2,10 @@
 using System;
 using System.IO;
 using System.Windows;
-using System.Windows.Media.Imaging;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 
 namespace PdfDisplayTest;
 
@@ -13,6 +15,9 @@ public partial class MainWindow : Window
     private string? _currentPdfPath;
     private double _pdfPageWidth;
     private double _pdfPageHeight;
+    private bool _isDrawing;
+    private Point _lastPoint;
+    private System.Windows.Shapes.Polyline? _currentStroke;
 
     public MainWindow()
     {
@@ -41,23 +46,38 @@ public partial class MainWindow : Window
         {
             int pageCount = _pdfService.GetPageCount(dialog.FileName);
 
-
             var pageSize = _pdfService.GetPageSize(dialog.FileName);
 
             _pdfPageWidth = pageSize.Width;
             _pdfPageHeight = pageSize.Height;
 
-            string bmpPath = _pdfService.RenderFirstPageToBmp(dialog.FileName);
+            string bmpPath =
+                _pdfService.RenderFirstPageToBmp(dialog.FileName);
 
-            var image = new BitmapImage();
+            BitmapImage image;
 
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.UriSource = new Uri(bmpPath);
-            image.EndInit();
-            image.Freeze();
+            using (var stream = new FileStream(
+                bmpPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite))
+            {
+                image = new BitmapImage();
+
+                image.BeginInit();
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.StreamSource = stream;
+                image.EndInit();
+                image.Freeze();
+            }
+
+            DrawingCanvas.Children.Clear();
 
             PdfImage.Source = image;
+
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Loaded,
+                new Action(UpdatePdfPageDisplaySize));
 
             Title = $"PDF表示テスト - {fileName}";
 
@@ -72,7 +92,6 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
-
     }
 
     private void AddAnnotationButton_Click(object sender, RoutedEventArgs e)
@@ -328,5 +347,118 @@ public partial class MainWindow : Window
             $"文字={character ?? "なし"}　" +
             $"文字列={text ?? "なし"}";
             }
+
+    private void DrawingCanvas_MouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (PdfImage.Source == null)
+        {
+            return;
+        }
+
+        _isDrawing = true;
+
+        _lastPoint = e.GetPosition(DrawingCanvas);
+
+        _currentStroke = new System.Windows.Shapes.Polyline
+        {
+            Stroke = Brushes.Red,
+            StrokeThickness = 3,
+            StrokeLineJoin = PenLineJoin.Round,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round
+        };
+
+        _currentStroke.Points.Add(_lastPoint);
+        DrawingCanvas.Children.Add(_currentStroke);
+
+        DrawingCanvas.CaptureMouse();
+    }
+
+    private void DrawingCanvas_MouseMove(
+        object sender,
+        MouseEventArgs e)
+    {
+        if (!_isDrawing || _currentStroke == null)
+        {
+            return;
+        }
+
+        Point currentPoint = e.GetPosition(DrawingCanvas);
+
+        double distanceX = currentPoint.X - _lastPoint.X;
+        double distanceY = currentPoint.Y - _lastPoint.Y;
+
+        double distance = Math.Sqrt(
+            distanceX * distanceX +
+            distanceY * distanceY);
+
+        // マウス移動が小さすぎる場合は点を追加しない
+        if (distance < 2)
+        {
+            return;
+        }
+
+        _currentStroke.Points.Add(currentPoint);
+        _lastPoint = currentPoint;
+    }
+
+    private void DrawingCanvas_MouseLeftButtonUp(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (!_isDrawing)
+        {
+            return;
+        }
+
+        _isDrawing = false;
+        _currentStroke = null;
+
+        DrawingCanvas.ReleaseMouseCapture();
+    }
+
+    private void PdfViewport_SizeChanged(
+        object sender,
+        SizeChangedEventArgs e)
+    {
+        UpdatePdfPageDisplaySize();
+    }
+
+    private void UpdatePdfPageDisplaySize()
+    {
+        if (PdfImage.Source is not BitmapSource bitmap)
+        {
+            return;
+        }
+
+        double viewportWidth = PdfViewport.ActualWidth;
+        double viewportHeight = PdfViewport.ActualHeight;
+
+        if (viewportWidth <= 1 || viewportHeight <= 1)
+        {
+            return;
+        }
+
+        double imageWidth = bitmap.PixelWidth;
+        double imageHeight = bitmap.PixelHeight;
+
+        if (imageWidth <= 0 || imageHeight <= 0)
+        {
+            return;
+        }
+
+        double widthScale = viewportWidth / imageWidth;
+        double heightScale = viewportHeight / imageHeight;
+
+        double scale = Math.Min(widthScale, heightScale);
+
+        double displayWidth = imageWidth * scale;
+        double displayHeight = imageHeight * scale;
+
+        PdfPageHost.Width = displayWidth;
+        PdfPageHost.Height = displayHeight;
+    }
 
 }

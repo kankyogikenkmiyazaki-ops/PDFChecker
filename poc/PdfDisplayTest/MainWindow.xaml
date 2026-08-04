@@ -13,52 +13,70 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-    <StackPanel Grid.Row="0"
-                Orientation="Horizontal"
-                HorizontalAlignment="Left">
+        <StackPanel Grid.Row="0"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Left">
 
-        <Button Width="120"
-                Height="32"
-                Content="PDFを開く"
-                Click="OpenPdfButton_Click" />
+            <Button Width="120"
+                    Height="32"
+                    Content="PDFを開く"
+                    Click="OpenPdfButton_Click" />
 
-        <Button Width="120"
-                Height="32"
-                Margin="10,0,0,0"
-                Content="注釈テスト"
-                Click="AddAnnotationButton_Click"/>
+            <Button Width="120"
+                    Height="32"
+                    Margin="10,0,0,0"
+                    Content="注釈テスト"
+                    Click="AddAnnotationButton_Click" />
 
-        <Button Width="120"
-                Height="32"
-                Margin="10,0,0,0"
-                Content="注釈を読む"
-                Click="ReadAnnotationButton_Click"/>
+            <Button Width="120"
+                    Height="32"
+                    Margin="10,0,0,0"
+                    Content="注釈を読む"
+                    Click="ReadAnnotationButton_Click" />
 
-        <Button Width="120"
-                Height="32"
-                Margin="10,0,0,0"
-                Content="文字抽出"
-                Click="ExtractTextButton_Click"/>
+            <Button Width="120"
+                    Height="32"
+                    Margin="10,0,0,0"
+                    Content="文字抽出"
+                    Click="ExtractTextButton_Click" />
 
-        <Button Width="120"
-                Height="32"
-                Margin="10,0,0,0"
-                Content="文字座標"
-                Click="ExtractCharacterPositionsButton_Click"/>                
+            <Button Width="120"
+                    Height="32"
+                    Margin="10,0,0,0"
+                    Content="文字座標"
+                    Click="ExtractCharacterPositionsButton_Click" />
 
-    </StackPanel>
-                            
+        </StackPanel>
+
         <Border Grid.Row="1"
                 Margin="0,12,0,12"
                 Background="#666666"
                 BorderBrush="#444444"
                 BorderThickness="1">
 
-            <Image x:Name="PdfImage"
-                MouseLeftButtonDown="PdfImage_MouseLeftButtonDown"
-                Stretch="Uniform"
-                Margin="8" />
+                <!-- PDFを表示できる領域 -->
+                <Grid x:Name="PdfViewport"
+                        Margin="8"
+                        SizeChanged="PdfViewport_SizeChanged">
 
+                        <!-- 実際のPDFページ範囲 -->
+                        <Grid x:Name="PdfPageHost"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        ClipToBounds="True">
+
+                        <Image x:Name="PdfImage"
+                                Stretch="Uniform" />
+
+                        <Canvas x:Name="DrawingCanvas"
+                                Background="Transparent"
+                                MouseLeftButtonDown="DrawingCanvas_MouseLeftButtonDown"
+                                MouseMove="DrawingCanvas_MouseMove"
+                                MouseLeftButtonUp="DrawingCanvas_MouseLeftButtonUp" />
+
+                        </Grid>
+
+                </Grid>
         </Border>
 
         <TextBlock x:Name="FilePathText"
@@ -67,3 +85,4 @@
                    TextTrimming="CharacterEllipsis" />
     </Grid>
 </Window>
+
