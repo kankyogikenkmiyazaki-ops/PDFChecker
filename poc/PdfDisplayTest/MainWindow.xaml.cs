@@ -6,6 +6,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using System.Collections.Generic;
 
 namespace PdfDisplayTest;
 
@@ -18,6 +19,8 @@ public partial class MainWindow : Window
     private bool _isDrawing;
     private Point _lastPoint;
     private System.Windows.Shapes.Polyline? _currentStroke;
+    private readonly Stack<System.Windows.UIElement> _undoStack = new();
+    private readonly Stack<System.Windows.UIElement> _redoStack = new();
 
     public MainWindow()
     {
@@ -373,6 +376,9 @@ public partial class MainWindow : Window
         _currentStroke.Points.Add(_lastPoint);
         DrawingCanvas.Children.Add(_currentStroke);
 
+        _undoStack.Push(_currentStroke);
+        _redoStack.Clear();
+
         DrawingCanvas.CaptureMouse();
     }
 
@@ -459,6 +465,36 @@ public partial class MainWindow : Window
 
         PdfPageHost.Width = displayWidth;
         PdfPageHost.Height = displayHeight;
+    }
+
+    private void UndoButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_undoStack.Count == 0)
+        {
+            return;
+        }
+
+        var element = _undoStack.Pop();
+
+        DrawingCanvas.Children.Remove(element);
+        _redoStack.Push(element);
+    }
+
+    private void RedoButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_redoStack.Count == 0)
+        {
+            return;
+        }
+
+        var element = _redoStack.Pop();
+
+        DrawingCanvas.Children.Add(element);
+        _undoStack.Push(element);
     }
 
 }

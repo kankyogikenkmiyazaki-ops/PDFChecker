@@ -17,34 +17,46 @@
                     Orientation="Horizontal"
                     HorizontalAlignment="Left">
 
-            <Button Width="120"
-                    Height="32"
-                    Content="PDFを開く"
-                    Click="OpenPdfButton_Click" />
+                <Button Width="120"
+                        Height="32"
+                        Content="PDFを開く"
+                        Click="OpenPdfButton_Click" />
 
-            <Button Width="120"
-                    Height="32"
-                    Margin="10,0,0,0"
-                    Content="注釈テスト"
-                    Click="AddAnnotationButton_Click" />
+                <Button Width="120"
+                        Height="32"
+                        Margin="10,0,0,0"
+                        Content="注釈テスト"
+                        Click="AddAnnotationButton_Click" />
 
-            <Button Width="120"
-                    Height="32"
-                    Margin="10,0,0,0"
-                    Content="注釈を読む"
-                    Click="ReadAnnotationButton_Click" />
+                <Button Width="120"
+                        Height="32"
+                        Margin="10,0,0,0"
+                        Content="注釈を読む"
+                        Click="ReadAnnotationButton_Click" />
 
-            <Button Width="120"
-                    Height="32"
-                    Margin="10,0,0,0"
-                    Content="文字抽出"
-                    Click="ExtractTextButton_Click" />
+                <Button Width="120"
+                        Height="32"
+                        Margin="10,0,0,0"
+                        Content="文字抽出"
+                        Click="ExtractTextButton_Click" />
 
-            <Button Width="120"
-                    Height="32"
-                    Margin="10,0,0,0"
-                    Content="文字座標"
-                    Click="ExtractCharacterPositionsButton_Click" />
+                <Button Width="120"
+                        Height="32"
+                        Margin="10,0,0,0"
+                        Content="文字座標"
+                        Click="ExtractCharacterPositionsButton_Click" />
+
+                <Button Width="100"
+                        Height="32"
+                        Margin="10,0,0,0"
+                        Content="Undo"
+                        Click="UndoButton_Click" />
+
+                <Button Width="100"
+                        Height="32"
+                        Margin="10,0,0,0"
+                        Content="Redo"
+                        Click="RedoButton_Click" />
 
         </StackPanel>
 
