@@ -165,6 +165,9 @@ public partial class MainWindow : Window
         PdfImage.Source =
             pageImage;
 
+        // PDF内のInk注釈をStrokeModelへ読み込む。
+        LoadCurrentPageAnnotations();
+
         PageText.Text =
             $"ページ: {_currentPageIndex + 1} / {_pageCount}";
 
@@ -688,6 +691,75 @@ public partial class MainWindow : Window
         }
 
         return converted;
+    }
+
+    /// 読み込んだInk注釈を画面表示用の座標へ変換する。
+    private StrokeModel ConvertStrokeFromPdfLoad(
+        StrokeModel source,
+        bool isRotated270)
+    {
+        var converted =
+            new StrokeModel
+            {
+                Color = source.Color,
+                Thickness = source.Thickness
+            };
+
+        foreach (Point point in source.PdfPoints)
+        {
+            Point displayPoint;
+
+            if (isRotated270)
+            {
+                // 保存時に行った270度補正を元へ戻す。
+                displayPoint =
+                    new Point(
+                        point.Y,
+                        _pdfPageHeight - point.X);
+            }
+            else
+            {
+                displayPoint =
+                    point;
+            }
+
+            converted.PdfPoints.Add(
+                displayPoint);
+        }
+
+        return converted;
+    }
+
+    /// 現在のページからInk注釈を読み込む。
+    private void LoadCurrentPageAnnotations()
+    {
+        if (string.IsNullOrWhiteSpace(_currentPdfPath))
+        {
+            return;
+        }
+
+        List<StrokeModel> loadedStrokes =
+            _pdfService.LoadInkAnnotations(
+                _currentPdfPath,
+                _currentPageIndex);
+
+        bool isRotated270 =
+            _pdfPageWidth > _pdfPageHeight;
+
+        _strokes.Clear();
+
+        foreach (StrokeModel stroke in loadedStrokes)
+        {
+            StrokeModel convertedStroke =
+                ConvertStrokeFromPdfLoad(
+                    stroke,
+                    isRotated270);
+
+            _strokes.Add(
+                convertedStroke);
+        }
+
+        _redoStrokes.Clear();
     }
 
 }

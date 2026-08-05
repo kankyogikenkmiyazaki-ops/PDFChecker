@@ -340,4 +340,180 @@ public sealed class PdfService
                 $"ページ番号が範囲外です。ページ数: {document.Pages.Count}");
         }
     }
+
+    /// PDFからInk注釈を読み込む。
+    public List<StrokeModel> LoadInkAnnotations(
+        string filePath,
+        int pageIndex)
+    {
+        using PdfSharpDocument document =
+            PdfReader.Open(
+                filePath,
+                PdfDocumentOpenMode.Import);
+
+        if (pageIndex < 0 ||
+            pageIndex >= document.PageCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pageIndex),
+                $"ページ番号が範囲外です。ページ数: {document.PageCount}");
+        }
+
+        var page =
+            document.Pages[pageIndex];
+
+        var strokes =
+            new List<StrokeModel>();
+
+        var annotations =
+            page.Elements.GetArray(
+                "/Annots");
+
+        if (annotations == null)
+        {
+            return strokes;
+        }
+
+        foreach (var item in annotations.Elements)
+        {
+            PdfSharp.Pdf.PdfDictionary? annotation =
+                item switch
+                {
+                    PdfSharp.Pdf.Advanced.PdfReference reference =>
+                        reference.Value as PdfSharp.Pdf.PdfDictionary,
+
+                    PdfSharp.Pdf.PdfDictionary dictionary =>
+                        dictionary,
+
+                    _ =>
+                        null
+                };
+
+            if (annotation == null)
+            {
+                continue;
+            }
+
+            string subtype =
+                annotation.Elements.GetName(
+                    "/Subtype");
+
+            if (subtype != "/Ink")
+            {
+                continue;
+            }
+
+            var inkList =
+                annotation.Elements.GetArray(
+                    "/InkList");
+
+            if (inkList == null)
+            {
+                continue;
+            }
+
+            StrokeColor color =
+                ReadStrokeColor(annotation);
+
+            double thickness =
+                ReadStrokeThickness(annotation);
+
+            foreach (var strokeItem in inkList.Elements)
+            {
+                if (strokeItem is not PdfSharp.Pdf.PdfArray pointArray)
+                {
+                    continue;
+                }
+
+                var stroke =
+                    new StrokeModel
+                    {
+                        Color = color,
+                        Thickness = thickness
+                    };
+
+                for (int index = 0;
+                    index + 1 < pointArray.Elements.Count;
+                    index += 2)
+                {
+                    double x =
+                        pointArray.Elements.GetReal(index);
+
+                    double y =
+                        pointArray.Elements.GetReal(index + 1);
+
+                    stroke.PdfPoints.Add(
+                        new Point(x, y));
+                }
+
+                if (stroke.PdfPoints.Count >= 2)
+                {
+                    strokes.Add(stroke);
+                }
+            }
+        }
+
+        return strokes;
+    }
+
+    /// Ink注釈の色を読み込む。
+    private static StrokeColor ReadStrokeColor(
+        PdfSharp.Pdf.PdfDictionary annotation)
+    {
+        var colorArray =
+            annotation.Elements.GetArray(
+                "/C");
+
+        if (colorArray == null ||
+            colorArray.Elements.Count < 3)
+        {
+            return StrokeColor.Red;
+        }
+
+        double red =
+            colorArray.Elements.GetReal(0);
+
+        double green =
+            colorArray.Elements.GetReal(1);
+
+        double blue =
+            colorArray.Elements.GetReal(2);
+
+        if (blue > red &&
+            blue > green)
+        {
+            return StrokeColor.Blue;
+        }
+
+        if (green > red &&
+            green > blue)
+        {
+            return StrokeColor.Green;
+        }
+
+        return StrokeColor.Red;
+    }
+
+    /// Ink注釈の線幅を読み込む。
+    private static double ReadStrokeThickness(
+        PdfSharp.Pdf.PdfDictionary annotation)
+    {
+        var borderStyle =
+            annotation.Elements.GetDictionary(
+                "/BS");
+
+        if (borderStyle == null)
+        {
+            return 3.0;
+        }
+
+        double thickness =
+            borderStyle.Elements.GetReal(
+                "/W");
+
+        return thickness > 0
+            ? thickness
+            : 3.0;
+    }
+
 }
