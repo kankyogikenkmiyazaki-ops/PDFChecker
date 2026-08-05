@@ -16,6 +16,10 @@ namespace PDFMarkup;
 
 public partial class MainWindow : Window
 {
+    // ページ移動コマンド
+    private static readonly RoutedCommand PreviousPageCommand = new();
+    private static readonly RoutedCommand NextPageCommand = new();    
+    
     // サービス
     private readonly PdfService _pdfService = new();
 
@@ -25,6 +29,7 @@ public partial class MainWindow : Window
 
     private StrokeModel? _currentStrokeModel;
     private Polyline? _currentStrokeView;
+
 
     // 描画状態
     private bool _isDrawing;
@@ -37,6 +42,16 @@ public partial class MainWindow : Window
 
     private double _pdfPageWidth;
     private double _pdfPageHeight;
+
+    // 左右パネルの開閉状態と復元用の幅
+    private bool _isLeftPanelOpen = true;
+    private bool _isRightPanelOpen = true;
+
+    private GridLength _leftPanelOpenWidth =
+        new GridLength(220);
+
+    private GridLength _rightPanelOpenWidth =
+        new GridLength(260);
 
     /// メイン画面を初期化する。
     public MainWindow()
@@ -66,6 +81,33 @@ public partial class MainWindow : Window
             new CommandBinding(
                 ApplicationCommands.Redo,
                 RedoMenuItem_Click));
+
+        InputBindings.Add(
+            new KeyBinding(
+                PreviousPageCommand,
+                new KeyGesture(
+                    Key.Left,
+                    ModifierKeys.Control)));
+
+        InputBindings.Add(
+            new KeyBinding(
+                NextPageCommand,
+                new KeyGesture(
+                    Key.Right,
+                    ModifierKeys.Control)));
+
+        CommandBindings.Add(
+            new CommandBinding(
+                PreviousPageCommand,
+                PreviousPageCommand_Executed));
+
+        CommandBindings.Add(
+            new CommandBinding(
+                NextPageCommand,
+                NextPageCommand_Executed));
+
+
+
     }
 
     /// PDF選択ダイアログを表示する。
@@ -171,10 +213,76 @@ public partial class MainWindow : Window
         PageText.Text =
             $"ページ: {_currentPageIndex + 1} / {_pageCount}";
 
+        PageNavigationText.Text =
+            $"{_currentPageIndex + 1} / {_pageCount}";
+
+        PreviousPageButton.IsEnabled =
+            _currentPageIndex > 0;
+
+        NextPageButton.IsEnabled =
+            _currentPageIndex < _pageCount - 1;
+
         // 初回表示時の縦横比崩れを防ぐため、レイアウト確定後に更新する。
         Dispatcher.BeginInvoke(
             DispatcherPriority.Loaded,
             new Action(UpdatePdfPageDisplaySize));
+    }
+
+    /// 指定されたページへ移動する。
+    private void ChangePage(
+        int pageIndex)
+    {
+        if (string.IsNullOrWhiteSpace(_currentPdfPath))
+        {
+            return;
+        }
+
+        if (pageIndex < 0 ||
+            pageIndex >= _pageCount)
+        {
+            return;
+        }
+
+        _currentPageIndex =
+            pageIndex;
+
+        DisplayCurrentPage();
+    }
+
+    /// 前のページを表示する。
+    private void PreviousPageButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        ChangePage(
+            _currentPageIndex - 1);
+    }
+
+    /// 次のページを表示する。
+    private void NextPageButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        ChangePage(
+            _currentPageIndex + 1);
+    }
+
+    /// ショートカットキーで前のページを表示する。
+    private void PreviousPageCommand_Executed(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        ChangePage(
+            _currentPageIndex - 1);
+    }
+
+    /// ショートカットキーで次のページを表示する。
+    private void NextPageCommand_Executed(
+        object sender,
+        ExecutedRoutedEventArgs e)
+    {
+        ChangePage(
+            _currentPageIndex + 1);
     }
 
     /// PDF表示領域のサイズ変更を処理する。
@@ -760,6 +868,223 @@ public partial class MainWindow : Window
         }
 
         _redoStrokes.Clear();
+    }
+
+    /// 朱書きモードの表示へ切り替える。
+    private void MarkupModeButton_Checked(
+        object sender,
+        RoutedEventArgs e)
+    {
+        var modeBrush =
+            new SolidColorBrush(
+                Color.FromRgb(
+                    252,
+                    232,
+                    232));
+
+        if (MainToolBarBorder != null)
+        {
+            MainToolBarBorder.Background =
+                modeBrush;
+        }
+
+        if (DrawingSettingsHeaderBorder != null)
+        {
+            DrawingSettingsHeaderBorder.Background =
+                modeBrush;
+        }
+
+        if (AnnotationInfoHeaderBorder != null)
+        {
+            AnnotationInfoHeaderBorder.Background =
+                modeBrush;
+        }
+
+        if (CurrentDrawingModeText != null)
+        {
+            CurrentDrawingModeText.Text =
+                "朱書き";
+        }
+    }
+
+    /// チェックモードの表示へ切り替える。
+    private void CheckModeButton_Checked(
+        object sender,
+        RoutedEventArgs e)
+    {
+        var modeBrush =
+            new SolidColorBrush(
+                Color.FromRgb(
+                    255,
+                    246,
+                    204));
+
+        if (MainToolBarBorder != null)
+        {
+            MainToolBarBorder.Background =
+                modeBrush;
+        }
+
+        if (DrawingSettingsHeaderBorder != null)
+        {
+            DrawingSettingsHeaderBorder.Background =
+                modeBrush;
+        }
+
+        if (AnnotationInfoHeaderBorder != null)
+        {
+            AnnotationInfoHeaderBorder.Background =
+                modeBrush;
+        }
+
+        if (CurrentDrawingModeText != null)
+        {
+            CurrentDrawingModeText.Text =
+                "チェック";
+        }
+    }
+
+
+    /// ページ一覧の選択変更を受け取る。
+    private void PageListBox_SelectionChanged(
+        object sender,
+        System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        // ページ一覧の実装時に、選択ページへの移動処理を追加する。
+    }
+
+
+    /// 左側のページ一覧を開閉する。
+    private void ToggleLeftPanelButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_isLeftPanelOpen)
+        {
+            if (LeftPanelColumn.ActualWidth > 0)
+            {
+                _leftPanelOpenWidth =
+                    new GridLength(
+                        LeftPanelColumn.ActualWidth);
+            }
+
+            LeftPanelColumn.MinWidth =
+                0;
+
+            LeftPanelColumn.Width =
+                new GridLength(0);
+
+            LeftPanelSplitter.IsEnabled =
+                false;
+
+            ToggleLeftPanelButton.Content =
+                "▶";
+
+            ToggleLeftPanelButton.ToolTip =
+                "ページ一覧を開く";
+        }
+        else
+        {
+            LeftPanelColumn.MinWidth =
+                220;
+
+            LeftPanelColumn.Width =
+                new GridLength(
+                    Math.Max(
+                        220,
+                        _leftPanelOpenWidth.Value));
+
+            LeftPanelSplitter.IsEnabled =
+                true;
+
+            ToggleLeftPanelButton.Content =
+                "◀";
+
+            ToggleLeftPanelButton.ToolTip =
+                "ページ一覧を閉じる";
+        }
+
+        _isLeftPanelOpen =
+            !_isLeftPanelOpen;
+    }
+
+    /// 右側の設定パネルを開閉する。
+    private void ToggleRightPanelButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_isRightPanelOpen)
+        {
+            if (RightPanelColumn.ActualWidth > 0)
+            {
+                _rightPanelOpenWidth =
+                    new GridLength(
+                        RightPanelColumn.ActualWidth);
+            }
+
+            RightPanelColumn.MinWidth =
+                0;
+
+            RightPanelColumn.Width =
+                new GridLength(0);
+
+            RightPanelSplitter.IsEnabled =
+                false;
+
+            ToggleRightPanelButton.Content =
+                "◀";
+
+            ToggleRightPanelButton.ToolTip =
+                "設定パネルを開く";
+        }
+        else
+        {
+            RightPanelColumn.MinWidth =
+                260;
+
+            RightPanelColumn.Width =
+                new GridLength(
+                    Math.Max(
+                        260,
+                        _rightPanelOpenWidth.Value));
+
+            RightPanelSplitter.IsEnabled =
+                true;
+
+            ToggleRightPanelButton.Content =
+                "▶";
+
+            ToggleRightPanelButton.ToolTip =
+                "設定パネルを閉じる";
+        }
+
+        _isRightPanelOpen =
+            !_isRightPanelOpen;
+    }
+
+
+    /// 右側設定パネルの幅を変更する。
+    private void RightPanelSplitter_DragDelta(
+        object sender,
+        System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+    {
+        if (!_isRightPanelOpen)
+        {
+            return;
+        }
+
+        double newWidth =
+            RightPanelColumn.ActualWidth -
+            e.HorizontalChange;
+
+        RightPanelColumn.Width =
+            new GridLength(
+                Math.Max(
+                    260,
+                    newWidth));
+
+        _rightPanelOpenWidth =
+            RightPanelColumn.Width;
     }
 
 }

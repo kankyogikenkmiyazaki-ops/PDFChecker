@@ -1,12 +1,156 @@
-﻿<Window x:Class="PDFMarkup.MainWindow"
+<Window x:Class="PDFMarkup.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="PDF Markup"
-        Width="1200"
-        Height="800"
-        MinWidth="800"
-        MinHeight="500"
+        Width="1400"
+        Height="850"
+        MinWidth="1000"
+        MinHeight="600"
         WindowStartupLocation="CenterScreen">
+
+    <Window.Resources>
+
+        <!-- 朱書き／チェックのモード切替ボタン -->
+        <Style x:Key="ModeRadioButtonStyle"
+               TargetType="RadioButton">
+
+            <Setter Property="Foreground"
+                    Value="#222222" />
+
+            <Setter Property="Cursor"
+                    Value="Hand" />
+
+            <Setter Property="Template">
+                <Setter.Value>
+
+                    <ControlTemplate TargetType="RadioButton">
+
+                        <Border x:Name="ModeButtonBorder"
+                                Background="#F4F4F4"
+                                BorderBrush="#AAAAAA"
+                                BorderThickness="1"
+                                CornerRadius="3"
+                                Padding="{TemplateBinding Padding}"
+                                Margin="{TemplateBinding Margin}">
+
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+
+                        </Border>
+
+                        <ControlTemplate.Triggers>
+
+                            <Trigger Property="IsMouseOver"
+                                     Value="True">
+
+                                <Setter TargetName="ModeButtonBorder"
+                                        Property="Background"
+                                        Value="#E5E5E5" />
+
+                            </Trigger>
+
+                            <Trigger Property="IsChecked"
+                                     Value="True">
+
+                                <Setter TargetName="ModeButtonBorder"
+                                        Property="Background"
+                                        Value="#FFFFFF" />
+
+                                <Setter TargetName="ModeButtonBorder"
+                                        Property="BorderBrush"
+                                        Value="#555555" />
+
+                                <Setter TargetName="ModeButtonBorder"
+                                        Property="BorderThickness"
+                                        Value="2" />
+
+                                <Setter Property="FontWeight"
+                                        Value="Bold" />
+
+                            </Trigger>
+
+                            <Trigger Property="IsEnabled"
+                                     Value="False">
+
+                                <Setter TargetName="ModeButtonBorder"
+                                        Property="Opacity"
+                                        Value="0.5" />
+
+                            </Trigger>
+
+                        </ControlTemplate.Triggers>
+
+                    </ControlTemplate>
+
+                </Setter.Value>
+            </Setter>
+
+        </Style>
+
+        <!-- ツールバー内の通常ボタン -->
+        <Style x:Key="ToolBarButtonStyle"
+               TargetType="Button">
+
+            <Setter Property="MinWidth"
+                    Value="38" />
+
+            <Setter Property="Height"
+                    Value="30" />
+
+            <Setter Property="Margin"
+                    Value="2,1" />
+
+            <Setter Property="Padding"
+                    Value="7,3" />
+
+            <Setter Property="VerticalContentAlignment"
+                    Value="Center" />
+
+            <Setter Property="HorizontalContentAlignment"
+                    Value="Center" />
+
+        </Style>
+
+        <!-- 右側パネル内の見出し -->
+        <Style x:Key="SidePanelSectionTitleStyle"
+               TargetType="TextBlock">
+
+            <Setter Property="FontWeight"
+                    Value="Bold" />
+
+            <Setter Property="FontSize"
+                    Value="13" />
+
+            <Setter Property="Margin"
+                    Value="0,0,0,8" />
+
+        </Style>
+
+        <!-- 色パレット用ボタン -->
+        <Style x:Key="ColorPaletteButtonStyle"
+               TargetType="Button">
+
+            <Setter Property="Width"
+                    Value="28" />
+
+            <Setter Property="Height"
+                    Value="28" />
+
+            <Setter Property="Margin"
+                    Value="3" />
+
+            <Setter Property="Padding"
+                    Value="0" />
+
+            <Setter Property="BorderBrush"
+                    Value="#777777" />
+
+            <Setter Property="BorderThickness"
+                    Value="1" />
+
+        </Style>
+
+    </Window.Resources>
 
     <DockPanel>
 
@@ -14,37 +158,165 @@
         <Menu DockPanel.Dock="Top">
 
             <MenuItem Header="ファイル">
+
                 <MenuItem Header="PDFを開く"
                           Click="OpenPdfMenuItem_Click" />
 
                 <Separator />
 
                 <MenuItem Header="保存" />
-                <MenuItem Header="名前を付けて保存" 
-                            Click="SaveAsMenuItem_Click" />
+
+                <MenuItem Header="名前を付けて保存"
+                          Click="SaveAsMenuItem_Click" />
 
                 <Separator />
 
                 <MenuItem Header="終了" />
+
             </MenuItem>
 
             <MenuItem Header="編集">
+
                 <MenuItem Header="元に戻す"
-                        InputGestureText="Ctrl+Z"
-                        Click="UndoMenuItem_Click" />
+                          InputGestureText="Ctrl+Z"
+                          Click="UndoMenuItem_Click" />
 
                 <MenuItem Header="やり直す"
-                        InputGestureText="Ctrl+Y"
-                        Click="RedoMenuItem_Click" />
+                          InputGestureText="Ctrl+Y"
+                          Click="RedoMenuItem_Click" />
+
             </MenuItem>
 
             <MenuItem Header="表示">
+
                 <MenuItem Header="拡大" />
                 <MenuItem Header="縮小" />
                 <MenuItem Header="全体表示" />
+
             </MenuItem>
 
         </Menu>
+
+        <!-- 上部ツールバー -->
+        <Border x:Name="MainToolBarBorder"
+                DockPanel.Dock="Top"
+                Background="#FCE8E8"
+                BorderBrush="#BBBBBB"
+                BorderThickness="0,0,0,1">
+
+            <ToolBarTray Background="Transparent"
+                         IsLocked="True">
+
+                <ToolBar x:Name="MainToolBar"
+                         Background="Transparent"
+                         Band="0"
+                         BandIndex="0">
+
+                    <!-- ファイル操作 -->
+                    <Button Content="開く"
+                            ToolTip="PDFを開く"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="OpenPdfMenuItem_Click" />
+
+                    <Button Content="保存"
+                            ToolTip="現在のPDFを保存"
+                            Style="{StaticResource ToolBarButtonStyle}" />
+
+                    <Button Content="別名保存"
+                            ToolTip="名前を付けて保存"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="SaveAsMenuItem_Click" />
+
+                    <Separator />
+
+                    <!-- 描画モード -->
+                    <RadioButton x:Name="MarkupModeButton"
+                                 GroupName="DrawingMode"
+                                 Content="朱書き"
+                                 ToolTip="朱書きモード"
+                                 Style="{StaticResource ModeRadioButtonStyle}"
+                                 Padding="12,5"
+                                 Margin="2"
+                                 IsChecked="True"
+                                 Checked="MarkupModeButton_Checked" />
+
+                    <RadioButton x:Name="CheckModeButton"
+                                 GroupName="DrawingMode"
+                                 Content="チェック"
+                                 ToolTip="チェックモード"
+                                 Style="{StaticResource ModeRadioButtonStyle}"
+                                 Padding="12,5"
+                                 Margin="2"
+                                 Checked="CheckModeButton_Checked" />
+
+                    <Separator />
+
+                    <!-- 描画操作 -->
+                    <Button Content="消しゴム"
+                            ToolTip="消しゴム"
+                            Style="{StaticResource ToolBarButtonStyle}" />
+
+                    <Separator />
+
+                    <!-- Undo / Redo -->
+                    <Button Content="↶"
+                            ToolTip="元に戻す Ctrl+Z"
+                            FontSize="18"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="UndoMenuItem_Click" />
+
+                    <Button Content="↷"
+                            ToolTip="やり直す Ctrl+Y"
+                            FontSize="18"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="RedoMenuItem_Click" />
+
+                    <Separator />
+
+                    <!-- ページ移動 -->
+                    <Button x:Name="PreviousPageButton"
+                            Content="◀"
+                            ToolTip="前のページ Ctrl+←"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="PreviousPageButton_Click"
+                            IsEnabled="False" />
+
+                    <TextBlock x:Name="PageNavigationText"
+                               Text="- / -"
+                               MinWidth="55"
+                               Margin="6,0"
+                               VerticalAlignment="Center"
+                               TextAlignment="Center" />
+
+                    <Button x:Name="NextPageButton"
+                            Content="▶"
+                            ToolTip="次のページ Ctrl+→"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="NextPageButton_Click"
+                            IsEnabled="False" />
+
+                    <Separator />
+
+                    <!-- 表示操作 -->
+                    <Button Content="－"
+                            ToolTip="縮小"
+                            FontSize="18"
+                            Style="{StaticResource ToolBarButtonStyle}" />
+
+                    <Button Content="＋"
+                            ToolTip="拡大"
+                            FontSize="18"
+                            Style="{StaticResource ToolBarButtonStyle}" />
+
+                    <Button Content="全体"
+                            ToolTip="PDF全体を表示"
+                            Style="{StaticResource ToolBarButtonStyle}" />
+
+                </ToolBar>
+
+            </ToolBarTray>
+
+        </Border>
 
         <!-- 下部ステータスバー -->
         <StatusBar DockPanel.Dock="Bottom">
@@ -74,9 +346,32 @@
         <Grid>
 
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="220" />
+
+                <!-- 左側ページ一覧 -->
+                <ColumnDefinition x:Name="LeftPanelColumn"
+                                  Width="220"
+                                  MinWidth="220" />
+
+                <!-- 左パネル幅変更用 -->
                 <ColumnDefinition Width="5" />
+
+                <!-- 左パネル開閉ボタン -->
+                <ColumnDefinition Width="24" />
+
+                <!-- PDF表示 -->
                 <ColumnDefinition Width="*" />
+
+                <!-- 右パネル開閉ボタン -->
+                <ColumnDefinition Width="24" />
+
+                <!-- 右パネル幅変更用 -->
+                <ColumnDefinition Width="5" />
+
+                <!-- 右側設定パネル -->
+                <ColumnDefinition x:Name="RightPanelColumn"
+                                  Width="260"
+                                  MinWidth="260" />
+
             </Grid.ColumnDefinitions>
 
             <!-- 左側ページ一覧 -->
@@ -87,14 +382,18 @@
 
                 <DockPanel>
 
-                    <TextBlock DockPanel.Dock="Top"
-                               Text="ページ一覧"
-                               FontWeight="Bold"
-                               Padding="10"
-                               Background="#E5E5E5" />
+                    <Border DockPanel.Dock="Top"
+                            Background="#E5E5E5"
+                            Padding="10">
+
+                        <TextBlock Text="ページ一覧"
+                                   FontWeight="Bold" />
+
+                    </Border>
 
                     <ListBox x:Name="PageListBox"
-                             Margin="8">
+                             Margin="8"
+                             SelectionChanged="PageListBox_SelectionChanged">
 
                         <ListBoxItem Content="PDFを開くとページが表示されます" />
 
@@ -105,32 +404,37 @@
             </Border>
 
             <!-- 左側ページ一覧の幅変更用 -->
-            <GridSplitter Grid.Column="1"
+            <GridSplitter x:Name="LeftPanelSplitter"
+                          Grid.Column="1"
                           Width="5"
                           HorizontalAlignment="Stretch"
-                          Background="#D0D0D0" />
+                          VerticalAlignment="Stretch"
+                          Background="#B8B8B8"
+                          ResizeDirection="Columns"
+                          ResizeBehavior="PreviousAndNext"
+                          ShowsPreview="True" />
 
-            <!-- 中央PDF表示領域 -->
-            <Border Grid.Column="2"
+            <!-- 左側ページ一覧の開閉レール -->
+            <Button x:Name="ToggleLeftPanelButton"
+                    Grid.Column="2"
+                    Content="◀"
+                    ToolTip="ページ一覧を閉じる"
+                    Padding="0"
+                    HorizontalContentAlignment="Center"
+                    VerticalContentAlignment="Center"
+                    Background="#D0D0D0"
+                    BorderBrush="#B8B8B8"
+                    BorderThickness="0"
+                    Click="ToggleLeftPanelButton_Click" />
+
+            <!-- PDF表示領域 -->
+            <Border Grid.Column="3"
                     Background="#666666">
 
-                <!--
-                    PDFを表示するための領域。
-                    ウィンドウサイズ変更時に
-                    PdfPageHostの大きさを再計算する。
-                -->
                 <Grid x:Name="PdfViewport"
                       SizeChanged="PdfViewport_SizeChanged">
 
-                    <!--
-                        PDFページ本体。
-
-                        PdfImageとDrawingCanvasを
-                        同じGrid内に重ねて配置する。
-
-                        WidthとHeightは、
-                        PDFを開いた後にコード側で設定する。
-                    -->
+                    <!-- PDFページ本体 -->
                     <Grid x:Name="PdfPageHost"
                           Width="600"
                           Height="700"
@@ -163,6 +467,174 @@
                     </Grid>
 
                 </Grid>
+
+            </Border>
+
+            <!-- 右側設定パネルの開閉レール -->
+            <Button x:Name="ToggleRightPanelButton"
+                    Grid.Column="4"
+                    Content="▶"
+                    ToolTip="設定パネルを閉じる"
+                    Padding="0"
+                    HorizontalContentAlignment="Center"
+                    VerticalContentAlignment="Center"
+                    Background="#D0D0D0"
+                    BorderBrush="#B8B8B8"
+                    BorderThickness="0"
+                    Click="ToggleRightPanelButton_Click" />
+
+            <!-- 右側設定パネルの幅変更用 -->
+            <Thumb x:Name="RightPanelSplitter"
+                   Grid.Column="5"
+                   Width="5"
+                   HorizontalAlignment="Stretch"
+                   VerticalAlignment="Stretch"
+                   Background="#B8B8B8"
+                   Cursor="SizeWE"
+                   DragDelta="RightPanelSplitter_DragDelta" />
+
+            <!-- 右側設定パネル -->
+            <Border Grid.Column="6"
+                    Background="#F7F7F7"
+                    BorderBrush="#CCCCCC"
+                    BorderThickness="1,0,0,0">
+
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+
+                    <StackPanel>
+
+                        <!-- 描画設定 -->
+                        <Border x:Name="DrawingSettingsHeaderBorder"
+                                Background="#FCE8E8"
+                                Padding="10">
+
+                            <TextBlock Text="描画設定"
+                                       FontWeight="Bold" />
+
+                        </Border>
+
+                        <StackPanel Margin="12">
+
+                            <TextBlock Text="現在のモード"
+                                       Style="{StaticResource SidePanelSectionTitleStyle}" />
+
+                            <TextBlock x:Name="CurrentDrawingModeText"
+                                       Text="朱書き"
+                                       Margin="0,0,0,14" />
+
+                            <TextBlock Text="色"
+                                       Style="{StaticResource SidePanelSectionTitleStyle}" />
+
+                            <!-- 現段階では朱書き用3色のみ表示 -->
+                            <WrapPanel Margin="0,0,0,14">
+
+                                <Button ToolTip="赤"
+                                        Style="{StaticResource ColorPaletteButtonStyle}"
+                                        Background="#E53935" />
+
+                                <Button ToolTip="青"
+                                        Style="{StaticResource ColorPaletteButtonStyle}"
+                                        Background="#1E88E5" />
+
+                                <Button ToolTip="緑"
+                                        Style="{StaticResource ColorPaletteButtonStyle}"
+                                        Background="#43A047" />
+
+                            </WrapPanel>
+
+                            <TextBlock Text="太さ"
+                                       Style="{StaticResource SidePanelSectionTitleStyle}" />
+
+                            <StackPanel Orientation="Horizontal"
+                                        Margin="0,0,0,14">
+
+                                <Slider x:Name="StrokeThicknessSlider"
+                                        Minimum="1"
+                                        Maximum="20"
+                                        Value="3"
+                                        Width="150"
+                                        TickFrequency="1"
+                                        IsSnapToTickEnabled="True" />
+
+                                <TextBlock x:Name="StrokeThicknessText"
+                                           Text="3.0"
+                                           Width="45"
+                                           Margin="8,0,0,0"
+                                           VerticalAlignment="Center"
+                                           TextAlignment="Right" />
+
+                            </StackPanel>
+
+                            <TextBlock Text="透明度"
+                                       Style="{StaticResource SidePanelSectionTitleStyle}" />
+
+                            <StackPanel Orientation="Horizontal">
+
+                                <Slider x:Name="StrokeOpacitySlider"
+                                        Minimum="10"
+                                        Maximum="100"
+                                        Value="90"
+                                        Width="150"
+                                        TickFrequency="5"
+                                        IsSnapToTickEnabled="True" />
+
+                                <TextBlock x:Name="StrokeOpacityText"
+                                           Text="90%"
+                                           Width="45"
+                                           Margin="8,0,0,0"
+                                           VerticalAlignment="Center"
+                                           TextAlignment="Right" />
+
+                            </StackPanel>
+
+                        </StackPanel>
+
+                        <Separator Margin="10,4" />
+
+                        <!-- 注釈情報 -->
+                        <Border x:Name="AnnotationInfoHeaderBorder"
+                                Background="#FCE8E8"
+                                Padding="10">
+
+                            <TextBlock Text="注釈情報"
+                                       FontWeight="Bold" />
+
+                        </Border>
+
+                        <StackPanel Margin="12">
+
+                            <TextBlock Text="口径"
+                                       Style="{StaticResource SidePanelSectionTitleStyle}" />
+
+                            <ComboBox x:Name="DiameterComboBox"
+                                      SelectedIndex="0"
+                                      Margin="0,0,0,14">
+
+                                <ComboBoxItem Content="未設定" />
+                                <ComboBoxItem Content="φ50" />
+                                <ComboBoxItem Content="φ75" />
+                                <ComboBoxItem Content="φ100" />
+                                <ComboBoxItem Content="φ150" />
+                                <ComboBoxItem Content="φ200" />
+                                <ComboBoxItem Content="φ300" />
+                                <ComboBoxItem Content="φ400" />
+
+                            </ComboBox>
+
+                            <TextBlock Text="コメント"
+                                       Style="{StaticResource SidePanelSectionTitleStyle}" />
+
+                            <TextBox x:Name="AnnotationCommentTextBox"
+                                     Height="90"
+                                     AcceptsReturn="True"
+                                     TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto" />
+
+                        </StackPanel>
+
+                    </StackPanel>
+
+                </ScrollViewer>
 
             </Border>
 
