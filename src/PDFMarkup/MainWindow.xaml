@@ -12,19 +12,30 @@
 
         <!-- 上部メニュー -->
         <Menu DockPanel.Dock="Top">
+
             <MenuItem Header="ファイル">
                 <MenuItem Header="PDFを開く"
-                    Click="OpenPdfMenuItem_Click" />
+                          Click="OpenPdfMenuItem_Click" />
+
                 <Separator />
+
                 <MenuItem Header="保存" />
-                <MenuItem Header="名前を付けて保存" />
+                <MenuItem Header="名前を付けて保存" 
+                            Click="SaveAsMenuItem_Click" />
+
                 <Separator />
+
                 <MenuItem Header="終了" />
             </MenuItem>
 
             <MenuItem Header="編集">
-                <MenuItem Header="元に戻す" />
-                <MenuItem Header="やり直す" />
+                <MenuItem Header="元に戻す"
+                        InputGestureText="Ctrl+Z"
+                        Click="UndoMenuItem_Click" />
+
+                <MenuItem Header="やり直す"
+                        InputGestureText="Ctrl+Y"
+                        Click="RedoMenuItem_Click" />
             </MenuItem>
 
             <MenuItem Header="表示">
@@ -32,31 +43,36 @@
                 <MenuItem Header="縮小" />
                 <MenuItem Header="全体表示" />
             </MenuItem>
+
         </Menu>
 
         <!-- 下部ステータスバー -->
         <StatusBar DockPanel.Dock="Bottom">
+
             <StatusBarItem>
                 <TextBlock x:Name="StatusText"
-                    Text="PDFを開いてください" />
+                           Text="PDFを開いてください" />
             </StatusBarItem>
 
             <Separator />
 
             <StatusBarItem>
                 <TextBlock x:Name="PageText"
-                        Text="ページ: -" />
+                           Text="ページ: -" />
             </StatusBarItem>
 
             <Separator />
 
             <StatusBarItem>
-                <TextBlock Text="倍率: 100%" />
+                <TextBlock x:Name="ZoomText"
+                           Text="倍率: 100%" />
             </StatusBarItem>
+
         </StatusBar>
 
         <!-- メイン画面 -->
         <Grid>
+
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="220" />
                 <ColumnDefinition Width="5" />
@@ -70,19 +86,25 @@
                     BorderThickness="0,0,1,0">
 
                 <DockPanel>
+
                     <TextBlock DockPanel.Dock="Top"
                                Text="ページ一覧"
                                FontWeight="Bold"
                                Padding="10"
                                Background="#E5E5E5" />
 
-                    <ListBox Margin="8">
+                    <ListBox x:Name="PageListBox"
+                             Margin="8">
+
                         <ListBoxItem Content="PDFを開くとページが表示されます" />
+
                     </ListBox>
+
                 </DockPanel>
+
             </Border>
 
-            <!-- 幅変更用 -->
+            <!-- 左側ページ一覧の幅変更用 -->
             <GridSplitter Grid.Column="1"
                           Width="5"
                           HorizontalAlignment="Stretch"
@@ -92,23 +114,60 @@
             <Border Grid.Column="2"
                     Background="#666666">
 
-                <Grid>
-                    <Border Width="600"
-                            Height="700"
-                            Background="White"
-                            BorderBrush="#444444"
-                            BorderThickness="1"
-                            HorizontalAlignment="Center"
-                            VerticalAlignment="Center">
+                <!--
+                    PDFを表示するための領域。
+                    ウィンドウサイズ変更時に
+                    PdfPageHostの大きさを再計算する。
+                -->
+                <Grid x:Name="PdfViewport"
+                      SizeChanged="PdfViewport_SizeChanged">
 
-                        <TextBlock Text="PDF表示エリア"
-                                   Foreground="#888888"
-                                   FontSize="20"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center" />
-                    </Border>
+                    <!--
+                        PDFページ本体。
+
+                        PdfImageとDrawingCanvasを
+                        同じGrid内に重ねて配置する。
+
+                        WidthとHeightは、
+                        PDFを開いた後にコード側で設定する。
+                    -->
+                    <Grid x:Name="PdfPageHost"
+                          Width="600"
+                          Height="700"
+                          Background="White"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center"
+                          ClipToBounds="True">
+
+                        <!-- PDFページ画像 -->
+                        <Image x:Name="PdfImage"
+                               Stretch="Uniform"
+                               HorizontalAlignment="Stretch"
+                               VerticalAlignment="Stretch" />
+
+                        <!-- PDF上の描画レイヤー -->
+                        <Canvas x:Name="DrawingCanvas"
+                                Background="Transparent"
+                                HorizontalAlignment="Stretch"
+                                VerticalAlignment="Stretch"
+                                ClipToBounds="True"
+                                MouseLeftButtonDown="DrawingCanvas_MouseLeftButtonDown"
+                                MouseMove="DrawingCanvas_MouseMove"
+                                MouseLeftButtonUp="DrawingCanvas_MouseLeftButtonUp" />
+
+                        <!-- PDFページ外枠 -->
+                        <Border BorderBrush="#444444"
+                                BorderThickness="1"
+                                IsHitTestVisible="False" />
+
+                    </Grid>
+
                 </Grid>
+
             </Border>
+
         </Grid>
+
     </DockPanel>
+
 </Window>
