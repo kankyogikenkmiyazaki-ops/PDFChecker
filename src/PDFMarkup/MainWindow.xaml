@@ -242,16 +242,19 @@
                          BandIndex="0">
 
                     <!-- ファイル操作 -->
-                    <Button Content="開く"
+                    <Button x:Name="OpenPdfButton"
+                            Content="開く"
                             ToolTip="PDFを開く"
                             Style="{StaticResource ToolBarButtonStyle}"
                             Click="OpenPdfMenuItem_Click" />
 
-                    <Button Content="保存"
+                    <Button x:Name="SavePdfButton"
+                            Content="保存"
                             ToolTip="現在のPDFを保存"
                             Style="{StaticResource ToolBarButtonStyle}" />
 
-                    <Button Content="別名保存"
+                    <Button x:Name="SaveAsPdfButton"
+                            Content="別名保存"
                             ToolTip="名前を付けて保存"
                             Style="{StaticResource ToolBarButtonStyle}"
                             Click="SaveAsMenuItem_Click" />
@@ -259,15 +262,13 @@
                     <Separator />
 
                     <!-- 描画モード -->
-                    <RadioButton x:Name="MarkupModeButton"
-                                 GroupName="DrawingMode"
-                                 Content="朱書き"
-                                 ToolTip="朱書きモード"
-                                 Style="{StaticResource ModeRadioButtonStyle}"
-                                 Padding="12,5"
-                                 Margin="2,2,0,2"
-                                 IsChecked="True"
-                                 Checked="MarkupModeButton_Checked" />
+                    <Button x:Name="MarkupModeButton"
+                            Content="朱書き"
+                            ToolTip="朱書き描画へ切り替える"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Padding="12,5"
+                            Margin="2,2,0,2"
+                            Click="MarkupModeButton_Click" />
 
                     <Button x:Name="MarkupVisibilityButton"
                             Content="👁"
@@ -279,14 +280,13 @@
                             Margin="0,2,5,2"
                             Click="MarkupVisibilityButton_Click" />
 
-                    <RadioButton x:Name="CheckModeButton"
-                                 GroupName="DrawingMode"
-                                 Content="チェック"
-                                 ToolTip="チェックモード"
-                                 Style="{StaticResource ModeRadioButtonStyle}"
-                                 Padding="12,5"
-                                 Margin="2,2,0,2"
-                                 Checked="CheckModeButton_Checked" />
+                    <Button x:Name="CheckModeButton"
+                            Content="チェック"
+                            ToolTip="チェック描画へ切り替える"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Padding="12,5"
+                            Margin="2,2,0,2"
+                            Click="CheckModeButton_Click" />
 
                     <Button x:Name="CheckVisibilityButton"
                             Content="👁"
@@ -301,20 +301,36 @@
                     <Separator />
 
                     <!-- 描画操作 -->
-                    <Button Content="消しゴム"
-                            ToolTip="消しゴム"
-                            Style="{StaticResource ToolBarButtonStyle}" />
+                    <Button x:Name="SelectToolButton"
+                            Content="選択"
+                            ToolTip="注釈選択モード"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="SelectToolButton_Click" />
+
+                    <Button x:Name="EraserButton"
+                            Content="消しゴム"
+                            ToolTip="消しゴムモードに切り替える"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="EraserButton_Click" />
+
+                    <Button x:Name="HandToolButton"
+                            Content="手"
+                            ToolTip="手のひらツール"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="HandToolButton_Click" />
 
                     <Separator />
 
                     <!-- Undo / Redo -->
-                    <Button Content="↶"
+                    <Button x:Name="UndoButton"
+                            Content="↶"
                             ToolTip="元に戻す Ctrl+Z"
                             FontSize="18"
                             Style="{StaticResource ToolBarButtonStyle}"
                             Click="UndoMenuItem_Click" />
 
-                    <Button Content="↷"
+                    <Button x:Name="RedoButton"
+                            Content="↷"
                             ToolTip="やり直す Ctrl+Y"
                             FontSize="18"
                             Style="{StaticResource ToolBarButtonStyle}"
@@ -347,19 +363,25 @@
                     <Separator />
 
                     <!-- 表示操作 -->
-                    <Button Content="－"
+                    <Button x:Name="ZoomOutButton"
+                            Content="－"
                             ToolTip="縮小"
                             FontSize="18"
-                            Style="{StaticResource ToolBarButtonStyle}" />
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="ZoomOutButton_Click" />
 
-                    <Button Content="＋"
+                    <Button x:Name="ZoomInButton"
+                            Content="＋"
                             ToolTip="拡大"
                             FontSize="18"
-                            Style="{StaticResource ToolBarButtonStyle}" />
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="ZoomInButton_Click" />
 
-                    <Button Content="全体"
+                    <Button x:Name="FitPageButton"
+                            Content="全体"
                             ToolTip="PDF全体を表示"
-                            Style="{StaticResource ToolBarButtonStyle}" />
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="FitPageButton_Click" />
 
                 </ToolBar>
 
@@ -440,13 +462,159 @@
 
                     </Border>
 
-                    <ListBox x:Name="PageListBox"
-                             Margin="8"
-                             SelectionChanged="PageListBox_SelectionChanged">
+                    <Grid>
 
-                        <ListBoxItem Content="PDFを開くとページが表示されます" />
+                        <TextBlock x:Name="PageListEmptyText"
+                                   Text="PDFを開くとページが表示されます"
+                                   Margin="12"
+                                   Foreground="#777777"
+                                   TextWrapping="Wrap"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Top" />
 
-                    </ListBox>
+                        <ListBox x:Name="PageListBox"
+                                 Margin="6"
+                                 Background="Transparent"
+                                 BorderThickness="0"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                 VirtualizingPanel.IsVirtualizing="True"
+                                 VirtualizingPanel.VirtualizationMode="Recycling"
+                                 SelectionChanged="PageListBox_SelectionChanged">
+
+                            <ListBox.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <VirtualizingStackPanel />
+                                </ItemsPanelTemplate>
+                            </ListBox.ItemsPanel>
+
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+
+                                    <Setter Property="HorizontalContentAlignment"
+                                            Value="Stretch" />
+
+                                    <Setter Property="Margin"
+                                            Value="3,4" />
+
+                                    <Setter Property="Padding"
+                                            Value="4" />
+
+                                    <Setter Property="Background"
+                                            Value="Transparent" />
+
+                                    <Setter Property="BorderBrush"
+                                            Value="Transparent" />
+
+                                    <Setter Property="BorderThickness"
+                                            Value="2" />
+
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="ListBoxItem">
+
+                                                <Border x:Name="ThumbnailItemBorder"
+                                                        Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                        CornerRadius="3"
+                                                        Padding="{TemplateBinding Padding}">
+
+                                                    <ContentPresenter />
+
+                                                </Border>
+
+                                                <ControlTemplate.Triggers>
+
+                                                    <Trigger Property="IsMouseOver"
+                                                             Value="True">
+
+                                                        <Setter TargetName="ThumbnailItemBorder"
+                                                                Property="Background"
+                                                                Value="#E9F2FC" />
+
+                                                    </Trigger>
+
+                                                    <Trigger Property="IsSelected"
+                                                             Value="True">
+
+                                                        <Setter TargetName="ThumbnailItemBorder"
+                                                                Property="Background"
+                                                                Value="#DCEEFF" />
+
+                                                        <Setter TargetName="ThumbnailItemBorder"
+                                                                Property="BorderBrush"
+                                                                Value="#1976D2" />
+
+                                                    </Trigger>
+
+                                                </ControlTemplate.Triggers>
+
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+
+                                    <StackPanel HorizontalAlignment="Center">
+
+                                        <Border Width="170"
+                                                MinHeight="80"
+                                                Background="White"
+                                                BorderBrush="#AFAFAF"
+                                                BorderThickness="1"
+                                                Padding="3">
+
+                                            <Grid>
+
+                                                <TextBlock Text="読込中..."
+                                                           Foreground="#888888"
+                                                           HorizontalAlignment="Center"
+                                                           VerticalAlignment="Center">
+
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Visibility"
+                                                                    Value="Collapsed" />
+
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding Thumbnail}"
+                                                                             Value="{x:Null}">
+                                                                    <Setter Property="Visibility"
+                                                                            Value="Visible" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+
+                                                </TextBlock>
+
+                                                <Image Source="{Binding Thumbnail}"
+                                                       Stretch="Uniform"
+                                                       RenderOptions.BitmapScalingMode="HighQuality" />
+
+                                            </Grid>
+
+                                        </Border>
+
+                                        <TextBlock Text="{Binding PageNumber}"
+                                                   Margin="0,5,0,1"
+                                                   HorizontalAlignment="Center"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#333333" />
+
+                                    </StackPanel>
+
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+
+                        </ListBox>
+
+                    </Grid>
 
                 </DockPanel>
 
@@ -480,42 +648,58 @@
             <Border Grid.Column="3"
                     Background="#666666">
 
-                <Grid x:Name="PdfViewport"
-                      SizeChanged="PdfViewport_SizeChanged">
+                <ScrollViewer x:Name="PdfViewport"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto"
+                              PanningMode="None"
+                              IsManipulationEnabled="False"
+                              SizeChanged="PdfViewport_SizeChanged"
+                              PreviewMouseDown="PdfViewport_PreviewMouseDown"
+                              PreviewMouseMove="PdfViewport_PreviewMouseMove"
+                              PreviewMouseUp="PdfViewport_PreviewMouseUp"
+                              PreviewMouseWheel="PdfViewport_PreviewMouseWheel">
 
-                    <!-- PDFページ本体 -->
-                    <Grid x:Name="PdfPageHost"
-                          Width="600"
-                          Height="700"
-                          Background="White"
-                          HorizontalAlignment="Center"
-                          VerticalAlignment="Center"
-                          ClipToBounds="True">
+                    <!-- 余白を含めたPDF配置領域 -->
+                    <Grid x:Name="PdfScrollContent"
+                          MinWidth="{Binding ActualWidth, ElementName=PdfViewport}"
+                          MinHeight="{Binding ActualHeight, ElementName=PdfViewport}">
 
-                        <!-- PDFページ画像 -->
-                        <Image x:Name="PdfImage"
-                               Stretch="Uniform"
-                               HorizontalAlignment="Stretch"
-                               VerticalAlignment="Stretch" />
+                        <!-- PDFページ本体 -->
+                        <Grid x:Name="PdfPageHost"
+                              Width="600"
+                              Height="700"
+                              Margin="30"
+                              Background="White"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              ClipToBounds="True">
 
-                        <!-- PDF上の描画レイヤー -->
-                        <Canvas x:Name="DrawingCanvas"
-                                Background="Transparent"
-                                HorizontalAlignment="Stretch"
-                                VerticalAlignment="Stretch"
-                                ClipToBounds="True"
-                                MouseLeftButtonDown="DrawingCanvas_MouseLeftButtonDown"
-                                MouseMove="DrawingCanvas_MouseMove"
-                                MouseLeftButtonUp="DrawingCanvas_MouseLeftButtonUp" />
+                            <!-- PDFページ画像 -->
+                            <Image x:Name="PdfImage"
+                                   Stretch="Uniform"
+                                   HorizontalAlignment="Stretch"
+                                   VerticalAlignment="Stretch" />
 
-                        <!-- PDFページ外枠 -->
-                        <Border BorderBrush="#444444"
-                                BorderThickness="1"
-                                IsHitTestVisible="False" />
+                            <!-- PDF上の描画レイヤー -->
+                            <Canvas x:Name="DrawingCanvas"
+                                    Background="Transparent"
+                                    HorizontalAlignment="Stretch"
+                                    VerticalAlignment="Stretch"
+                                    ClipToBounds="True"
+                                    MouseLeftButtonDown="DrawingCanvas_MouseLeftButtonDown"
+                                    MouseMove="DrawingCanvas_MouseMove"
+                                    MouseLeftButtonUp="DrawingCanvas_MouseLeftButtonUp" />
+
+                            <!-- PDFページ外枠 -->
+                            <Border BorderBrush="#444444"
+                                    BorderThickness="1"
+                                    IsHitTestVisible="False" />
+
+                        </Grid>
 
                     </Grid>
 
-                </Grid>
+                </ScrollViewer>
 
             </Border>
 
@@ -755,11 +939,15 @@
                             <TextBlock Text="コメント"
                                        Style="{StaticResource SidePanelSectionTitleStyle}" />
 
-                            <TextBox x:Name="AnnotationCommentTextBox"
-                                     Height="90"
-                                     AcceptsReturn="True"
-                                     TextWrapping="Wrap"
-                                     VerticalScrollBarVisibility="Auto" />
+                                <TextBox x:Name="AnnotationCommentTextBox"
+                                        Height="90"
+                                        AcceptsReturn="True"
+                                        TextWrapping="Wrap"
+                                        VerticalScrollBarVisibility="Auto"
+                                        TextChanged="AnnotationCommentTextBox_TextChanged"
+                                        GotKeyboardFocus="AnnotationCommentTextBox_GotKeyboardFocus"
+                                        LostKeyboardFocus="AnnotationCommentTextBox_LostKeyboardFocus"
+                                        PreviewKeyDown="AnnotationCommentTextBox_PreviewKeyDown" />
 
                         </StackPanel>
 

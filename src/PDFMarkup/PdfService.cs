@@ -45,6 +45,70 @@ public sealed class PdfService
             page.Height);
     }
 
+    /// 指定されたPDFページを一覧表示用のサムネイル画像として描画する。
+    public BitmapImage RenderThumbnail(
+        string filePath,
+        int pageIndex,
+        int maximumPixelWidth)
+    {
+        using var document =
+            new PdfDocument(filePath, null);
+
+        ValidatePageIndex(
+            document,
+            pageIndex);
+
+        using var page =
+            document.Pages[pageIndex];
+
+        int width =
+            Math.Max(
+                1,
+                maximumPixelWidth);
+
+        double aspectRatio =
+            page.Height / page.Width;
+
+        int height =
+            Math.Max(
+                1,
+                (int)Math.Round(
+                    width * aspectRatio));
+
+        using var bitmap =
+            new PDFiumBitmap(
+                width,
+                height,
+                false);
+
+        bitmap.Fill(
+            new FPDF_COLOR(
+                255,
+                255,
+                255,
+                255));
+
+        page.Render(bitmap);
+
+        using var stream =
+            bitmap.AsBmpStream(
+                96,
+                96);
+
+        var image =
+            new BitmapImage();
+
+        image.BeginInit();
+        image.CacheOption =
+            BitmapCacheOption.OnLoad;
+        image.StreamSource =
+            stream;
+        image.EndInit();
+        image.Freeze();
+
+        return image;
+    }
+
     /// 指定されたPDFページを画像として描画する。
     public BitmapImage RenderPage(
         string filePath,

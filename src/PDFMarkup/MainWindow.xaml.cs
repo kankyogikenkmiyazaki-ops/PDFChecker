@@ -2,7 +2,13 @@
 using PDFMarkup.Models;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO;
+using System.Globalization;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -17,6 +23,80 @@ namespace PDFMarkup;
 
 public partial class MainWindow : Window
 {
+    /// 現在使用している操作ツールを表す。
+    private enum ToolMode
+    {
+        Drawing,
+        Select,
+        Eraser,
+        Hand
+    }
+
+    /// Undo / Redoで扱う操作の種類。
+    private enum UndoActionType
+    {
+        AddStroke,
+        DeleteStroke,
+        EditDiameter,
+        EditComment,
+        EditColor,
+        EditThickness,
+        EditOpacity
+    }
+
+    /// 1回分の操作履歴を保持する。
+    private sealed class UndoAction
+    {
+        public UndoActionType Type { get; init; }
+
+        public StrokeModel Stroke { get; init; } = null!;
+
+        public int StrokeIndex { get; init; }
+
+        public string OldValue { get; init; } = string.Empty;
+
+        public string NewValue { get; init; } = string.Empty;
+    }
+
+    /// 左側ページ一覧へ表示する1ページ分の情報を保持する。
+    private sealed class PageThumbnailItem : INotifyPropertyChanged
+    {
+        private BitmapSource? _thumbnail;
+
+        public int PageIndex { get; init; }
+
+        public int PageNumber =>
+            PageIndex + 1;
+
+        public BitmapSource? Thumbnail
+        {
+            get => _thumbnail;
+
+            set
+            {
+                if (ReferenceEquals(
+                        _thumbnail,
+                        value))
+                {
+                    return;
+                }
+
+                _thumbnail = value;
+                OnPropertyChanged();
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        private void OnPropertyChanged(
+            [CallerMemberName] string? propertyName = null)
+        {
+            PropertyChanged?.Invoke(
+                this,
+                new PropertyChangedEventArgs(propertyName));
+        }
+    }
+
     // ページ移動コマンド
     private static readonly RoutedCommand PreviousPageCommand = new();
     private static readonly RoutedCommand NextPageCommand = new();    
@@ -26,12 +106,25 @@ public partial class MainWindow : Window
 
     // 現在ページの描画データ
     private readonly List<StrokeModel> _strokes = new();
-    private readonly Stack<StrokeModel> _redoStrokes = new();
 
-    // ページごとの未保存描画とRedo状態を保持する。
+    // 現在ページの操作履歴。
+    private readonly Stack<UndoAction> _undoActions = new();
+    private readonly Stack<UndoAction> _redoActions = new();
+
+    // ページごとの未保存描画と操作履歴を保持する。
     private readonly Dictionary<int, List<StrokeModel>> _pageStrokes = new();
-    private readonly Dictionary<int, Stack<StrokeModel>> _pageRedoStrokes = new();
+    private readonly Dictionary<int, Stack<UndoAction>> _pageUndoActions = new();
+    private readonly Dictionary<int, Stack<UndoAction>> _pageRedoActions = new();
     private readonly HashSet<int> _loadedAnnotationPages = new();
+
+    // 左側のサムネイル一覧。
+    private readonly ObservableCollection<PageThumbnailItem> _pageThumbnails = new();
+
+    // PDFを開き直したとき、古いサムネイル生成を停止する。
+    private CancellationTokenSource? _thumbnailCancellation;
+
+    // コードからページ一覧の選択を同期している間は、ページ移動を発生させない。
+    private bool _isUpdatingPageListSelection;
 
     private StrokeModel? _currentStrokeModel;
     private Polyline? _currentStrokeView;
@@ -39,9 +132,33 @@ public partial class MainWindow : Window
     // 現在選択されている注釈。
     private StrokeModel? _selectedStroke;
 
-    // 注釈選択時など、口径ComboBoxをコードから更新している間は
-    // 自動色変更を行わない。
+    // 注釈選択時など、右パネルをコードから更新している間は
+    // 編集イベントを選択中注釈へ反映しない。
+    private bool _isUpdatingAnnotationPanel;
+
+    // 選択中注釈のモード表示をコードから同期している間は、
+    // 描画ツールへの切替や基本設定の復元を行わない。
+    private bool _isApplyingSelectedStroke;
+
+    // 口径ComboBoxをコードから更新している間は、
+    // 口径強調表示の再描画を行わない。
     private bool _isUpdatingDiameterSelection;
+
+    // コメント編集を1回のUndoとしてまとめるため、編集開始時の値を保持する。
+    private StrokeModel? _commentEditingStroke;
+    private string _commentEditOriginalValue = string.Empty;
+
+    // 描画設定UIをコードから更新している間は、
+    // スライダー変更を注釈編集として扱わない。
+    private bool _isUpdatingDrawingSettingsUi;
+
+    // 太さスライダーのドラッグを1回のUndoとしてまとめる。
+    private StrokeModel? _thicknessEditingStroke;
+    private double _thicknessEditOriginalValue;
+
+    // 透明度スライダーのドラッグを1回のUndoとしてまとめる。
+    private StrokeModel? _opacityEditingStroke;
+    private byte _opacityEditOriginalValue;
 
     // 注釈モードごとの表示状態。
     private bool _isMarkupVisible = true;
@@ -62,6 +179,15 @@ public partial class MainWindow : Window
     private double _lastCheckThickness = 8.0;
     private byte _lastCheckOpacity = 96;
 
+    // 現在選択されている操作ツール。
+    private ToolMode _currentToolMode = ToolMode.Drawing;
+
+    // PDFをつかんで移動するパン操作の状態。
+    private bool _isPanning;
+    private Point _panStartPoint;
+    private double _panStartHorizontalOffset;
+    private double _panStartVerticalOffset;
+
     // 描画状態
     private bool _isDrawing;
     private Point _lastCanvasPoint;
@@ -73,6 +199,17 @@ public partial class MainWindow : Window
 
     private double _pdfPageWidth;
     private double _pdfPageHeight;
+
+    // 全体表示時のPDF表示サイズ。
+    private double _fitPageWidth;
+    private double _fitPageHeight;
+
+    // 全体表示を100%とした現在のズーム倍率。
+    private double _zoomFactor = 1.0;
+
+    private const double MinimumZoomFactor = 0.25;
+    private const double MaximumZoomFactor = 5.0;
+    private const double ZoomStep = 1.2;
 
     // 左右パネルの開閉状態と復元用の幅
     private bool _isLeftPanelOpen = true;
@@ -88,6 +225,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        PageListBox.ItemsSource =
+            _pageThumbnails;
 
         InputBindings.Add(
             new KeyBinding(
@@ -137,8 +277,43 @@ public partial class MainWindow : Window
                 NextPageCommand,
                 NextPageCommand_Executed));
 
+        // Escキーで選択中の注釈を解除できるようにする。
+        PreviewKeyDown += MainWindow_PreviewKeyDown;
 
+        // 太さスライダーのドラッグ開始から終了までを、1回の編集として扱う。
+        StrokeThicknessSlider.PreviewMouseLeftButtonDown +=
+            StrokeThicknessSlider_PreviewMouseLeftButtonDown;
 
+        StrokeThicknessSlider.PreviewMouseLeftButtonUp +=
+            StrokeThicknessSlider_PreviewMouseLeftButtonUp;
+
+        StrokeThicknessSlider.LostMouseCapture +=
+            StrokeThicknessSlider_LostMouseCapture;
+
+        // 透明度スライダーのドラッグ開始から終了までを、1回の編集として扱う。
+        StrokeOpacitySlider.PreviewMouseLeftButtonDown +=
+            StrokeOpacitySlider_PreviewMouseLeftButtonDown;
+
+        StrokeOpacitySlider.PreviewMouseLeftButtonUp +=
+            StrokeOpacitySlider_PreviewMouseLeftButtonUp;
+
+        StrokeOpacitySlider.LostMouseCapture +=
+            StrokeOpacitySlider_LostMouseCapture;
+
+        // 将来の画像アイコン・専用カーソル差し替えに備え、
+        // ボタン表示とカーソルは初期化処理からまとめて設定する。
+        InitializeReplaceableUiVisuals();
+
+        Closed +=
+            MainWindow_Closed;
+    }
+
+    /// ウィンドウ終了時にバックグラウンド処理を停止する。
+    private void MainWindow_Closed(
+        object? sender,
+        EventArgs e)
+    {
+        CancelThumbnailGeneration();
     }
 
     /// PDF選択ダイアログを表示する。
@@ -188,17 +363,24 @@ public partial class MainWindow : Window
 
         DrawingCanvas.Children.Clear();
         _strokes.Clear();
-        _redoStrokes.Clear();
+        _undoActions.Clear();
+        _redoActions.Clear();
         _pageStrokes.Clear();
-        _pageRedoStrokes.Clear();
+        _pageUndoActions.Clear();
+        _pageRedoActions.Clear();
         _loadedAnnotationPages.Clear();
+
+        CancelThumbnailGeneration();
+        PreparePageThumbnailItems();
 
         _isDrawing = false;
         _currentStrokeModel = null;
         _currentStrokeView = null;
-        _selectedStroke = null;
+        _zoomFactor = 1.0;
+        ClearStrokeSelection();
 
         DisplayCurrentPage();
+        StartThumbnailGeneration();
 
         string fileName =
             IOPath.GetFileName(filePath);
@@ -258,6 +440,8 @@ public partial class MainWindow : Window
         NextPageButton.IsEnabled =
             _currentPageIndex < _pageCount - 1;
 
+        SyncPageListSelection();
+
         // 初回表示時の縦横比崩れを防ぐため、レイアウト確定後に更新する。
         Dispatcher.BeginInvoke(
             DispatcherPriority.Loaded,
@@ -279,9 +463,12 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 編集中のコメントを確定してからページを移動する。
+        CommitCommentEditUndo();
+
         // 移動前ページの未保存描画をメモリへ退避する。
         SaveCurrentPageState();
-        _selectedStroke = null;
+        ClearStrokeSelection();
 
         _currentPageIndex =
             pageIndex;
@@ -342,10 +529,20 @@ public partial class MainWindow : Window
         }
 
         double viewportWidth =
-            PdfViewport.ActualWidth;
+            PdfViewport.ViewportWidth;
 
         double viewportHeight =
-            PdfViewport.ActualHeight;
+            PdfViewport.ViewportHeight;
+
+        if (viewportWidth <= 1 ||
+            viewportHeight <= 1)
+        {
+            viewportWidth =
+                PdfViewport.ActualWidth;
+
+            viewportHeight =
+                PdfViewport.ActualHeight;
+        }
 
         if (viewportWidth <= 1 ||
             viewportHeight <= 1)
@@ -365,17 +562,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        const double viewportMargin = 30.0;
+        const double viewportMargin = 60.0;
 
         double availableWidth =
             Math.Max(
                 1,
-                viewportWidth - viewportMargin * 2);
+                viewportWidth - viewportMargin);
 
         double availableHeight =
             Math.Max(
                 1,
-                viewportHeight - viewportMargin * 2);
+                viewportHeight - viewportMargin);
 
         double widthScale =
             availableWidth / imageWidth;
@@ -383,22 +580,283 @@ public partial class MainWindow : Window
         double heightScale =
             availableHeight / imageHeight;
 
-        // 小さい方の倍率を使い、縦横比を維持したまま全体を表示する。
-        double scale =
+        double fitScale =
             Math.Min(
                 widthScale,
                 heightScale);
 
+        _fitPageWidth =
+            imageWidth * fitScale;
+
+        _fitPageHeight =
+            imageHeight * fitScale;
+
+        ApplyZoomSize();
+    }
+
+    /// 現在のズーム倍率をPDFページと注釈Canvasへ反映する。
+    private void ApplyZoomSize()
+    {
+        if (_fitPageWidth <= 0 ||
+            _fitPageHeight <= 0)
+        {
+            return;
+        }
+
         PdfPageHost.Width =
-            imageWidth * scale;
+            _fitPageWidth * _zoomFactor;
 
         PdfPageHost.Height =
-            imageHeight * scale;
+            _fitPageHeight * _zoomFactor;
 
-        // Canvasの新しいサイズが確定してからストロークを再描画する。
+        if (ZoomText != null)
+        {
+            ZoomText.Text =
+                $"倍率: {_zoomFactor * 100:0}%";
+        }
+
+        ZoomOutButton.IsEnabled =
+            _zoomFactor > MinimumZoomFactor;
+
+        ZoomInButton.IsEnabled =
+            _zoomFactor < MaximumZoomFactor;
+
         Dispatcher.BeginInvoke(
             DispatcherPriority.Render,
             new Action(RedrawStrokes));
+    }
+
+    /// 指定倍率へ変更し、必要に応じて表示中心を維持する。
+    private void SetZoomFactor(
+        double zoomFactor,
+        bool keepViewportCenter = true)
+    {
+        double newZoomFactor =
+            Math.Clamp(
+                zoomFactor,
+                MinimumZoomFactor,
+                MaximumZoomFactor);
+
+        if (Math.Abs(
+                newZoomFactor - _zoomFactor) < 0.0001)
+        {
+            return;
+        }
+
+        double oldScrollableWidth =
+            Math.Max(
+                1,
+                PdfViewport.ExtentWidth);
+
+        double oldScrollableHeight =
+            Math.Max(
+                1,
+                PdfViewport.ExtentHeight);
+
+        double centerXRatio =
+            (PdfViewport.HorizontalOffset +
+             PdfViewport.ViewportWidth / 2.0) /
+            oldScrollableWidth;
+
+        double centerYRatio =
+            (PdfViewport.VerticalOffset +
+             PdfViewport.ViewportHeight / 2.0) /
+            oldScrollableHeight;
+
+        _zoomFactor =
+            newZoomFactor;
+
+        ApplyZoomSize();
+
+        if (!keepViewportCenter)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Render,
+            new Action(() =>
+            {
+                double targetHorizontalOffset =
+                    centerXRatio * PdfViewport.ExtentWidth -
+                    PdfViewport.ViewportWidth / 2.0;
+
+                double targetVerticalOffset =
+                    centerYRatio * PdfViewport.ExtentHeight -
+                    PdfViewport.ViewportHeight / 2.0;
+
+                PdfViewport.ScrollToHorizontalOffset(
+                    Math.Max(
+                        0,
+                        targetHorizontalOffset));
+
+                PdfViewport.ScrollToVerticalOffset(
+                    Math.Max(
+                        0,
+                        targetVerticalOffset));
+            }));
+    }
+
+    /// 拡大ボタンでPDFを一段階拡大する。
+    private void ZoomInButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        SetZoomFactor(
+            _zoomFactor * ZoomStep);
+    }
+
+    /// 縮小ボタンでPDFを一段階縮小する。
+    private void ZoomOutButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        SetZoomFactor(
+            _zoomFactor / ZoomStep);
+    }
+
+    /// PDFを表示領域全体へ収める。
+    private void FitPageButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        _zoomFactor = 1.0;
+        UpdatePdfPageDisplaySize();
+
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Render,
+            new Action(() =>
+            {
+                PdfViewport.ScrollToHorizontalOffset(0);
+                PdfViewport.ScrollToVerticalOffset(0);
+            }));
+    }
+
+    /// 中ボタン、手のひらツール、Space＋左ボタンでパン操作を開始する。
+    private void PdfViewport_PreviewMouseDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        bool isMiddleButton =
+            e.ChangedButton == MouseButton.Middle;
+
+        bool isHandLeftButton =
+            e.ChangedButton == MouseButton.Left &&
+            _currentToolMode == ToolMode.Hand;
+
+        bool isSpaceLeftButton =
+            e.ChangedButton == MouseButton.Left &&
+            Keyboard.IsKeyDown(Key.Space);
+
+        if (!isMiddleButton &&
+            !isHandLeftButton &&
+            !isSpaceLeftButton)
+        {
+            return;
+        }
+
+        BeginPan(
+            e.GetPosition(PdfViewport));
+
+        e.Handled = true;
+    }
+
+    /// パン操作中のマウス移動をスクロール位置へ反映する。
+    private void PdfViewport_PreviewMouseMove(
+        object sender,
+        MouseEventArgs e)
+    {
+        if (!_isPanning)
+        {
+            return;
+        }
+
+        Point currentPoint =
+            e.GetPosition(PdfViewport);
+
+        double deltaX =
+            currentPoint.X - _panStartPoint.X;
+
+        double deltaY =
+            currentPoint.Y - _panStartPoint.Y;
+
+        PdfViewport.ScrollToHorizontalOffset(
+            _panStartHorizontalOffset - deltaX);
+
+        PdfViewport.ScrollToVerticalOffset(
+            _panStartVerticalOffset - deltaY);
+
+        e.Handled = true;
+    }
+
+    /// マウスボタンを離した時点でパン操作を終了する。
+    private void PdfViewport_PreviewMouseUp(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (!_isPanning)
+        {
+            return;
+        }
+
+        bool shouldEnd =
+            e.ChangedButton == MouseButton.Middle ||
+            e.ChangedButton == MouseButton.Left;
+
+        if (!shouldEnd)
+        {
+            return;
+        }
+
+        EndPan();
+        e.Handled = true;
+    }
+
+    /// PDFをつかんで移動する処理を開始する。
+    private void BeginPan(
+        Point startPoint)
+    {
+        _isPanning = true;
+        _panStartPoint = startPoint;
+        _panStartHorizontalOffset =
+            PdfViewport.HorizontalOffset;
+        _panStartVerticalOffset =
+            PdfViewport.VerticalOffset;
+
+        PdfViewport.CaptureMouse();
+        PdfViewport.Cursor =
+            Cursors.SizeAll;
+    }
+
+    /// PDFをつかんで移動する処理を終了する。
+    private void EndPan()
+    {
+        _isPanning = false;
+        if (PdfViewport.IsMouseCaptured)
+        {
+            PdfViewport.ReleaseMouseCapture();
+        }
+
+        PdfViewport.Cursor =
+            Cursors.Arrow;
+
+        UpdateCanvasCursor();
+    }
+
+    /// マウスホイールをPDFのズーム操作として処理する。
+    private void PdfViewport_PreviewMouseWheel(
+        object sender,
+        MouseWheelEventArgs e)
+    {
+        double zoomMultiplier =
+            e.Delta > 0
+                ? ZoomStep
+                : 1.0 / ZoomStep;
+
+        SetZoomFactor(
+            _zoomFactor * zoomMultiplier);
+
+        e.Handled = true;
     }
 
     /// マウスドラッグによる描画を開始する。
@@ -419,21 +877,66 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 非表示中のモードで新しく描き始めた場合は、描画結果が見えるよう自動表示する。
-        EnsureCurrentDrawingModeVisible();
-
-        // 既存注釈をクリックした場合は描画を開始せず、その注釈を選択する。
-        StrokeModel? hitStroke =
-            FindStrokeAtCanvasPoint(canvasPoint);
-
-        if (hitStroke != null)
+        // Shiftを押しながらクリックした場合は、注釈の選択だけを解除する。
+        if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
         {
-            SelectStroke(hitStroke);
+            // 編集中のコメントを確定してからページを移動する。
+            CommitCommentEditUndo();
+            
+            ClearStrokeSelection();
+            RedrawStrokes();
             e.Handled = true;
             return;
         }
 
-        _selectedStroke = null;
+        // 選択モードでは、クリックした注釈だけを選択する。
+        // 空白部分をクリックした場合は選択を解除する。
+        if (_currentToolMode == ToolMode.Select)
+        {
+            CommitCommentEditUndo();
+
+            StrokeModel? hitStroke =
+                FindStrokeAtCanvasPoint(canvasPoint);
+
+            if (hitStroke != null)
+            {
+                SelectStroke(hitStroke);
+            }
+            else
+            {
+                ClearStrokeSelection();
+                RedrawStrokes();
+            }
+
+            e.Handled = true;
+            return;
+        }
+
+        // 消しゴムモードでは、クリックした注釈だけを削除する。
+        // 空白部分をクリックしても新しい線は描画しない。
+        if (_currentToolMode == ToolMode.Eraser)
+        {
+            StrokeModel? eraseTarget =
+                FindStrokeAtCanvasPoint(canvasPoint);
+
+            if (eraseTarget != null)
+            {
+                DeleteStroke(
+                    eraseTarget);
+            }
+
+            e.Handled = true;
+            return;
+        }
+
+        // 非表示中のモードで新しく描き始めた場合は、描画結果が見えるよう自動表示する。
+        EnsureCurrentDrawingModeVisible();
+
+        // 描画モードでは既存注釈との重なりに関係なく、新しい線を描く。
+        // 編集中のコメントを確定してから新規描画へ移る。
+        CommitCommentEditUndo();
+        // 新規描画へ移るときは前の注釈選択を解除し、コメントを空にする。
+        ClearStrokeSelection();
         _isDrawing = true;
         _lastCanvasPoint = canvasPoint;
 
@@ -445,7 +948,6 @@ public partial class MainWindow : Window
 
         _currentStrokeModel.PdfPoints.Add(pdfPoint);
         _strokes.Add(_currentStrokeModel);
-        _redoStrokes.Clear();
 
         _currentStrokeView = new Polyline
         {
@@ -537,8 +1039,14 @@ public partial class MainWindow : Window
         if (_currentStrokeModel != null)
         {
             _currentStrokeModel.RecalculateSelectionBounds();
-            _selectedStroke = _currentStrokeModel;
-            ApplySelectedStrokeToRightPanel(_currentStrokeModel);
+
+            PushUndoAction(
+                new UndoAction
+                {
+                    Type = UndoActionType.AddStroke,
+                    Stroke = _currentStrokeModel,
+                    StrokeIndex = _strokes.IndexOf(_currentStrokeModel)
+                });
         }
 
         _currentStrokeModel = null;
@@ -646,10 +1154,389 @@ public partial class MainWindow : Window
         return null;
     }
 
+    /// 選択中の注釈を解除し、コメント欄だけを空にする。
+    private void ClearStrokeSelection()
+    {
+        _selectedStroke = null;
+
+        if (AnnotationCommentTextBox == null)
+        {
+            return;
+        }
+
+        _isUpdatingAnnotationPanel = true;
+
+        try
+        {
+            AnnotationCommentTextBox.Text = string.Empty;
+        }
+        finally
+        {
+            _isUpdatingAnnotationPanel = false;
+        }
+    }
+
+    /// Escキーによる選択解除と、Deleteキーによる注釈削除を処理する。
+    private void MainWindow_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            // 選択・消しゴム・手のひらモード中は、通常の描画モードへ戻す。
+            if (_currentToolMode == ToolMode.Select ||
+                _currentToolMode == ToolMode.Eraser ||
+                _currentToolMode == ToolMode.Hand)
+            {
+                SetToolMode(
+                    ToolMode.Drawing);
+
+                ClearStrokeSelection();
+                RedrawStrokes();
+                e.Handled = true;
+                return;
+            }
+
+            // 通常時は編集中のコメントを確定してから選択を解除する。
+            CommitCommentEditUndo();
+
+            ClearStrokeSelection();
+            RedrawStrokes();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key != Key.Delete)
+        {
+            return;
+        }
+
+        // コメントを実際に編集中のときだけ、TextBox側の文字削除を優先する。
+        // 線を選び直した後もキーボードフォーカスだけがTextBoxへ残る場合があるため、
+        // FocusedElementだけでは判定しない。
+        if (Keyboard.FocusedElement is TextBox &&
+            _commentEditingStroke != null)
+        {
+            return;
+        }
+
+        DeleteSelectedStroke();
+        e.Handled = true;
+    }
+
+    /// 消しゴムボタンで、クリック消しゴムモードへ切り替える。
+    private void EraserButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        CommitCommentEditUndo();
+        ClearStrokeSelection();
+
+        SetToolMode(
+            _currentToolMode == ToolMode.Eraser
+                ? ToolMode.Drawing
+                : ToolMode.Eraser);
+
+        RedrawStrokes();
+    }
+
+    /// 将来画像アイコンへ差し替える可能性があるUI表示を初期化する。
+    private void InitializeReplaceableUiVisuals()
+    {
+        OpenPdfButton.Content =
+            CreateIconContent(
+                "file-open",
+                "開く");
+
+        SavePdfButton.Content =
+            CreateIconContent(
+                "file-save",
+                "保存");
+
+        SaveAsPdfButton.Content =
+            CreateIconContent(
+                "file-save-as",
+                "別名保存");
+
+        SelectToolButton.Content =
+            CreateIconContent(
+                "tool-select",
+                "選択");
+
+        EraserButton.Content =
+            CreateIconContent(
+                "tool-eraser",
+                "消しゴム");
+
+        HandToolButton.Content =
+            CreateIconContent(
+                "tool-hand",
+                "手");
+
+        UndoButton.Content =
+            CreateIconContent(
+                "undo",
+                "↶");
+
+        RedoButton.Content =
+            CreateIconContent(
+                "redo",
+                "↷");
+
+        PreviousPageButton.Content =
+            CreateIconContent(
+                "page-previous",
+                "◀");
+
+        NextPageButton.Content =
+            CreateIconContent(
+                "page-next",
+                "▶");
+
+        ZoomOutButton.Content =
+            CreateIconContent(
+                "zoom-out",
+                "－");
+
+        ZoomInButton.Content =
+            CreateIconContent(
+                "zoom-in",
+                "＋");
+
+        FitPageButton.Content =
+            CreateIconContent(
+                "zoom-fit",
+                "全体");
+
+        UpdateVisibilityButtons();
+
+        ToggleLeftPanelButton.Content =
+            CreateIconContent(
+                "panel-left-close",
+                "◀");
+
+        ToggleRightPanelButton.Content =
+            CreateIconContent(
+                "panel-right-close",
+                "▶");
+
+        ApplyDrawingModeAppearance();
+        UpdateDrawingModeButtonVisuals();
+        UpdateCanvasCursor();
+    }
+
+    /// アイコンキーに対応するボタン表示を作成する。
+    /// 現在は文字・記号を返し、将来ここでImageやPathへ差し替える。
+    private static object CreateIconContent(
+        string iconKey,
+        string fallbackText)
+    {
+        // iconKeyは将来の画像アイコン検索に使用する。
+        _ = iconKey;
+
+        return fallbackText;
+    }
+
+    /// 現在のツールに対応するマウスカーソルを反映する。
+    private void UpdateCanvasCursor()
+    {
+        if (DrawingCanvas == null)
+        {
+            return;
+        }
+
+        DrawingCanvas.Cursor =
+            CreateToolCursor(
+                _currentToolMode);
+    }
+
+    /// ツールに対応するカーソルを作成する。
+    /// 将来ここで埋め込み.curファイルや独自カーソルへ差し替える。
+    private static Cursor CreateToolCursor(
+        ToolMode toolMode)
+    {
+        return toolMode switch
+        {
+            ToolMode.Select => Cursors.Arrow,
+            ToolMode.Eraser => Cursors.Cross,
+            ToolMode.Hand => Cursors.Hand,
+            ToolMode.Drawing => Cursors.Pen,
+            _ => Cursors.Arrow
+        };
+    }
+
+    /// 選択ボタンで注釈選択モードを切り替える。
+    /// 選択中にもう一度押した場合は、保持している朱書き／チェック描画へ戻る。
+    private void SelectToolButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        CommitCommentEditUndo();
+        ClearStrokeSelection();
+
+        SetToolMode(
+            _currentToolMode == ToolMode.Select
+                ? ToolMode.Drawing
+                : ToolMode.Select);
+
+        RedrawStrokes();
+    }
+
+    /// 手のひらボタンで、左ドラッグによる移動モードを切り替える。
+    private void HandToolButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        CommitCommentEditUndo();
+        ClearStrokeSelection();
+
+        SetToolMode(
+            _currentToolMode == ToolMode.Hand
+                ? ToolMode.Drawing
+                : ToolMode.Hand);
+
+        RedrawStrokes();
+    }
+
+    /// 現在の操作ツールを切り替え、ボタン表示とカーソルを更新する。
+    private void SetToolMode(
+        ToolMode toolMode)
+    {
+        _currentToolMode =
+            toolMode;
+
+        if (SelectToolButton != null)
+        {
+            bool isSelect =
+                toolMode == ToolMode.Select;
+
+            SelectToolButton.Opacity =
+                isSelect
+                    ? 1.0
+                    : 0.72;
+
+            SelectToolButton.FontWeight =
+                isSelect
+                    ? FontWeights.Bold
+                    : FontWeights.Normal;
+
+            SelectToolButton.ToolTip =
+                isSelect
+                    ? "選択モードを終了する"
+                    : "注釈選択モード";
+        }
+
+        if (EraserButton != null)
+        {
+            bool isEraser =
+                toolMode == ToolMode.Eraser;
+
+            EraserButton.Opacity =
+                isEraser
+                    ? 1.0
+                    : 0.72;
+
+            EraserButton.FontWeight =
+                isEraser
+                    ? FontWeights.Bold
+                    : FontWeights.Normal;
+
+            EraserButton.ToolTip =
+                isEraser
+                    ? "消しゴムモードを終了する"
+                    : "消しゴムモードに切り替える";
+        }
+
+        if (HandToolButton != null)
+        {
+            bool isHand =
+                toolMode == ToolMode.Hand;
+
+            HandToolButton.Opacity =
+                isHand
+                    ? 1.0
+                    : 0.72;
+
+            HandToolButton.FontWeight =
+                isHand
+                    ? FontWeights.Bold
+                    : FontWeights.Normal;
+
+            HandToolButton.ToolTip =
+                isHand
+                    ? "手のひらツールを終了する"
+                    : "手のひらツールに切り替える";
+        }
+
+        UpdateDrawingModeButtonVisuals();
+        UpdateCanvasCursor();
+    }
+
+    /// 現在選択されている注釈を削除する。
+    private void DeleteSelectedStroke()
+    {
+        if (_selectedStroke == null)
+        {
+            return;
+        }
+
+        DeleteStroke(
+            _selectedStroke);
+    }
+
+    /// 指定された注釈を削除し、Undo履歴へ登録する。
+    private void DeleteStroke(
+        StrokeModel stroke)
+    {
+        int strokeIndex =
+            _strokes.IndexOf(stroke);
+
+        if (strokeIndex < 0)
+        {
+            if (ReferenceEquals(
+                    _selectedStroke,
+                    stroke))
+            {
+                ClearStrokeSelection();
+                RedrawStrokes();
+            }
+
+            return;
+        }
+
+        CommitCommentEditUndo();
+
+        _strokes.RemoveAt(strokeIndex);
+
+        PushUndoAction(
+            new UndoAction
+            {
+                Type = UndoActionType.DeleteStroke,
+                Stroke = stroke,
+                StrokeIndex = strokeIndex
+            });
+
+        if (ReferenceEquals(
+                _selectedStroke,
+                stroke))
+        {
+            ClearStrokeSelection();
+        }
+
+        RedrawStrokes();
+    }
+
     /// 注釈を選択し、選択枠と右パネルへ情報を反映する。
     private void SelectStroke(
         StrokeModel stroke)
     {
+        if (!ReferenceEquals(
+                _selectedStroke,
+                stroke))
+        {
+            CommitCommentEditUndo();
+        }
+
         _selectedStroke = stroke;
         ApplySelectedStrokeToRightPanel(stroke);
         RedrawStrokes();
@@ -659,25 +1546,8 @@ public partial class MainWindow : Window
     private void ApplySelectedStrokeToRightPanel(
         StrokeModel stroke)
     {
-        // 先に上部のモードボタンを切り替え、
-        // ツールバーや右パネルの背景色、色パレットを同期する。
-        if (stroke.Mode == DrawingMode.Markup)
-        {
-            if (MarkupModeButton != null)
-            {
-                MarkupModeButton.IsChecked = true;
-            }
-        }
-        else
-        {
-            if (CheckModeButton != null)
-            {
-                CheckModeButton.IsChecked = true;
-            }
-        }
-
-        // Checkedイベントでは各モードの前回設定が一度復元されるため、
-        // 最後に選択した注釈自身の設定で上書きする。
+        // 選択した注釈自身の描画モードを表示へ反映する。
+        // Button化したため、選択状態はコード側で更新する。
         _currentDrawingMode = stroke.Mode;
         _currentStrokeColor = stroke.Color;
         _currentStrokeThickness = stroke.Thickness;
@@ -693,13 +1563,23 @@ public partial class MainWindow : Window
                     : "チェック";
         }
 
-        SelectDiameterInRightPanel(stroke.Diameter);
+        _isUpdatingAnnotationPanel = true;
 
-        if (AnnotationCommentTextBox != null)
+        try
         {
-            AnnotationCommentTextBox.Text = stroke.Comment;
+            SelectDiameterInRightPanel(stroke.Diameter);
+
+            if (AnnotationCommentTextBox != null)
+            {
+                AnnotationCommentTextBox.Text = stroke.Comment;
+            }
+        }
+        finally
+        {
+            _isUpdatingAnnotationPanel = false;
         }
 
+        UpdateDrawingModeButtonVisuals();
         UpdateDrawingSettingsUi();
     }
 
@@ -735,7 +1615,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// 口径変更時に、選択口径以外のチェック注釈をグレー表示へ更新する。
+    /// 口径変更を選択中の注釈へ即時反映し、強調表示を更新する。
     private void DiameterComboBox_SelectionChanged(
         object sender,
         SelectionChangedEventArgs e)
@@ -745,7 +1625,180 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!_isUpdatingAnnotationPanel &&
+            _selectedStroke != null &&
+            _strokes.Contains(_selectedStroke))
+        {
+            string oldDiameter =
+                _selectedStroke.Diameter;
+
+            string newDiameter =
+                GetSelectedDiameter();
+
+            if (!string.Equals(
+                    oldDiameter,
+                    newDiameter,
+                    StringComparison.Ordinal))
+            {
+                _selectedStroke.Diameter =
+                    newDiameter;
+
+                PushUndoAction(
+                    new UndoAction
+                    {
+                        Type = UndoActionType.EditDiameter,
+                        Stroke = _selectedStroke,
+                        OldValue = oldDiameter,
+                        NewValue = newDiameter
+                    });
+            }
+        }
+
         // 元のストローク色は変更せず、画面上の表示色だけを更新する。
+        RedrawStrokes();
+    }
+
+    /// コメント入力中の変更を受け取る。
+    /// コメントはフォーカスが外れた時点、またはEnterキーで確定する。
+    private void AnnotationCommentTextBox_TextChanged(
+        object sender,
+        TextChangedEventArgs e)
+    {
+        if (_isUpdatingAnnotationPanel)
+        {
+            return;
+        }
+
+        // 入力中はTextBoxだけを変更し、
+        // StrokeModelへの反映とUndo登録は確定時に行う。
+    }
+
+    /// コメント編集開始時の値を保持する。
+    private void AnnotationCommentTextBox_GotKeyboardFocus(
+        object sender,
+        KeyboardFocusChangedEventArgs e)
+    {
+        if (_isUpdatingAnnotationPanel ||
+            _selectedStroke == null ||
+            !_strokes.Contains(_selectedStroke))
+        {
+            _commentEditingStroke = null;
+            _commentEditOriginalValue = string.Empty;
+            return;
+        }
+
+        _commentEditingStroke =
+            _selectedStroke;
+
+        _commentEditOriginalValue =
+            _selectedStroke.Comment;
+    }
+
+    /// コメント欄からフォーカスが外れた時点で、編集を1回のUndo履歴へ登録する。
+    private void AnnotationCommentTextBox_LostKeyboardFocus(
+        object sender,
+        KeyboardFocusChangedEventArgs e)
+    {
+        CommitCommentEditUndo();
+    }
+
+    /// コメント欄でEnterキーが押されたときに編集を確定する。
+    private void AnnotationCommentTextBox_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        bool isControlPressed =
+            (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+
+        // TextBox標準の文字列Undoより先に、
+        // PDFMarkup全体の注釈Undoを実行する。
+        if (isControlPressed && e.Key == Key.Z)
+        {
+            UndoLastAction();
+            e.Handled = true;
+            return;
+        }
+
+        // TextBox標準のRedoではなく、
+        // PDFMarkup全体の注釈Redoを実行する。
+        if (isControlPressed && e.Key == Key.Y)
+        {
+            CommitCommentEditUndo();
+            RedoLastAction();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key != Key.Enter)
+        {
+            return;
+        }
+
+        CommitCommentEditUndo();
+
+        // 入力欄からフォーカスを外し、編集確定状態にする。
+        Keyboard.ClearFocus();
+
+        e.Handled = true;
+    }
+
+    /// Enterキーでコメント編集を確定する。
+    private void AnnotationCommentTextBox_KeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+        {
+            return;
+        }
+
+        CommitCommentEditUndo();
+
+        // Enter確定後に入力フォーカスを外す。
+        Keyboard.ClearFocus();
+
+        e.Handled = true;
+    }
+
+    /// コメント変更を1回分のUndo履歴として確定する。
+    private void CommitCommentEditUndo()
+    {
+        StrokeModel? stroke =
+            _commentEditingStroke;
+
+        _commentEditingStroke = null;
+
+        if (stroke == null ||
+            !_strokes.Contains(stroke))
+        {
+            _commentEditOriginalValue = string.Empty;
+            return;
+        }
+
+        string newValue =
+            AnnotationCommentTextBox.Text.Trim();
+
+        // 編集開始時に固定した注釈だけへ反映する。
+        stroke.Comment =
+            newValue;
+
+        if (!string.Equals(
+                _commentEditOriginalValue,
+                newValue,
+                StringComparison.Ordinal))
+        {
+            PushUndoAction(
+                new UndoAction
+                {
+                    Type = UndoActionType.EditComment,
+                    Stroke = stroke,
+                    OldValue = _commentEditOriginalValue,
+                    NewValue = newValue
+                });
+        }
+
+        _commentEditOriginalValue = string.Empty;
+
         RedrawStrokes();
     }
 
@@ -1064,7 +2117,7 @@ public partial class MainWindow : Window
         object sender,
         RoutedEventArgs e)
     {
-        UndoStroke();
+        UndoLastAction();
     }
 
     /// やり直す。
@@ -1072,45 +2125,188 @@ public partial class MainWindow : Window
         object sender,
         RoutedEventArgs e)
     {
-        RedoStroke();
+        RedoLastAction();
     }
 
-    /// 最後のストロークを元に戻す。
-    private void UndoStroke()
+    /// 新しい操作をUndo履歴へ登録し、Redo履歴を破棄する。
+    private void PushUndoAction(
+        UndoAction action)
     {
-        if (_strokes.Count == 0)
+        _undoActions.Push(action);
+        _redoActions.Clear();
+    }
+
+    /// 最後の操作を元に戻す。
+    private void UndoLastAction()
+    {
+        CommitCommentEditUndo();
+
+        if (_undoActions.Count == 0)
         {
             return;
         }
 
-        StrokeModel stroke =
-            _strokes[^1];
+        UndoAction action =
+            _undoActions.Pop();
 
-        _strokes.RemoveAt(
-            _strokes.Count - 1);
+        ApplyUndoAction(
+            action,
+            isUndo: true);
 
-        if (ReferenceEquals(_selectedStroke, stroke))
-        {
-            _selectedStroke = null;
-        }
-
-        _redoStrokes.Push(stroke);
-
-        RedrawStrokes();
+        _redoActions.Push(action);
+        RefreshAfterUndoRedo(action.Stroke);
     }
 
-    /// 元に戻したストロークをやり直す。
-    private void RedoStroke()
+    /// 元に戻した操作をやり直す。
+    private void RedoLastAction()
     {
-        if (_redoStrokes.Count == 0)
+        if (_redoActions.Count == 0)
         {
             return;
         }
 
-        StrokeModel stroke =
-            _redoStrokes.Pop();
+        UndoAction action =
+            _redoActions.Pop();
 
-        _strokes.Add(stroke);
+        ApplyUndoAction(
+            action,
+            isUndo: false);
+
+        _undoActions.Push(action);
+        RefreshAfterUndoRedo(action.Stroke);
+    }
+
+    /// 操作内容をUndoまたはRedoとして反映する。
+    private void ApplyUndoAction(
+        UndoAction action,
+        bool isUndo)
+    {
+        switch (action.Type)
+        {
+            case UndoActionType.AddStroke:
+                if (isUndo)
+                {
+                    _strokes.Remove(action.Stroke);
+
+                    if (ReferenceEquals(
+                            _selectedStroke,
+                            action.Stroke))
+                    {
+                        ClearStrokeSelection();
+                    }
+                }
+                else if (!_strokes.Contains(action.Stroke))
+                {
+                    int insertIndex =
+                        Math.Clamp(
+                            action.StrokeIndex,
+                            0,
+                            _strokes.Count);
+
+                    _strokes.Insert(
+                        insertIndex,
+                        action.Stroke);
+                }
+
+                break;
+
+            case UndoActionType.DeleteStroke:
+                if (isUndo)
+                {
+                    if (!_strokes.Contains(action.Stroke))
+                    {
+                        int insertIndex =
+                            Math.Clamp(
+                                action.StrokeIndex,
+                                0,
+                                _strokes.Count);
+
+                        _strokes.Insert(
+                            insertIndex,
+                            action.Stroke);
+                    }
+                }
+                else
+                {
+                    _strokes.Remove(action.Stroke);
+
+                    if (ReferenceEquals(
+                            _selectedStroke,
+                            action.Stroke))
+                    {
+                        ClearStrokeSelection();
+                    }
+                }
+
+                break;
+
+            case UndoActionType.EditDiameter:
+                action.Stroke.Diameter =
+                    isUndo
+                        ? action.OldValue
+                        : action.NewValue;
+                break;
+
+            case UndoActionType.EditComment:
+                action.Stroke.Comment =
+                    isUndo
+                        ? action.OldValue
+                        : action.NewValue;
+                break;
+
+            case UndoActionType.EditColor:
+                if (Enum.TryParse(
+                        isUndo
+                            ? action.OldValue
+                            : action.NewValue,
+                        true,
+                        out StrokeColor color))
+                {
+                    action.Stroke.Color = color;
+                }
+
+                break;
+
+            case UndoActionType.EditThickness:
+                if (double.TryParse(
+                        isUndo
+                            ? action.OldValue
+                            : action.NewValue,
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out double thickness))
+                {
+                    action.Stroke.Thickness = thickness;
+                    action.Stroke.RecalculateSelectionBounds();
+                }
+
+                break;
+
+            case UndoActionType.EditOpacity:
+                if (byte.TryParse(
+                        isUndo
+                            ? action.OldValue
+                            : action.NewValue,
+                        NumberStyles.Integer,
+                        CultureInfo.InvariantCulture,
+                        out byte opacity))
+                {
+                    action.Stroke.Opacity = opacity;
+                }
+
+                break;
+        }
+    }
+
+    /// Undo / Redo後に選択表示と右パネルを更新する。
+    private void RefreshAfterUndoRedo(
+        StrokeModel stroke)
+    {
+        if (_strokes.Contains(stroke))
+        {
+            _selectedStroke = stroke;
+            ApplySelectedStrokeToRightPanel(stroke);
+        }
 
         RedrawStrokes();
     }
@@ -1376,8 +2572,11 @@ public partial class MainWindow : Window
             _pageStrokes[pageIndex] =
                 convertedStrokes;
 
-            _pageRedoStrokes[pageIndex] =
-                new Stack<StrokeModel>();
+            _pageUndoActions[pageIndex] =
+                new Stack<UndoAction>();
+
+            _pageRedoActions[pageIndex] =
+                new Stack<UndoAction>();
 
             _loadedAnnotationPages.Add(pageIndex);
         }
@@ -1397,9 +2596,13 @@ public partial class MainWindow : Window
             new List<StrokeModel>(_strokes);
 
         // Stackの先頭が変わらないよう、列挙順を反転して複製する。
-        _pageRedoStrokes[_currentPageIndex] =
-            new Stack<StrokeModel>(
-                _redoStrokes.Reverse());
+        _pageUndoActions[_currentPageIndex] =
+            new Stack<UndoAction>(
+                _undoActions.Reverse());
+
+        _pageRedoActions[_currentPageIndex] =
+            new Stack<UndoAction>(
+                _redoActions.Reverse());
     }
 
     /// ページ別に保持した描画を復元し、初回表示時だけPDF注釈を読み込む。
@@ -1429,15 +2632,27 @@ public partial class MainWindow : Window
             _strokes.AddRange(pageStrokes);
         }
 
-        _redoStrokes.Clear();
+        _undoActions.Clear();
 
-        if (_pageRedoStrokes.TryGetValue(
+        if (_pageUndoActions.TryGetValue(
                 _currentPageIndex,
-                out Stack<StrokeModel>? pageRedoStrokes))
+                out Stack<UndoAction>? pageUndoActions))
         {
-            foreach (StrokeModel stroke in pageRedoStrokes.Reverse())
+            foreach (UndoAction action in pageUndoActions.Reverse())
             {
-                _redoStrokes.Push(stroke);
+                _undoActions.Push(action);
+            }
+        }
+
+        _redoActions.Clear();
+
+        if (_pageRedoActions.TryGetValue(
+                _currentPageIndex,
+                out Stack<UndoAction>? pageRedoActions))
+        {
+            foreach (UndoAction action in pageRedoActions.Reverse())
+            {
+                _redoActions.Push(action);
             }
         }
     }
@@ -1471,7 +2686,8 @@ public partial class MainWindow : Window
                 convertedStroke);
         }
 
-        _redoStrokes.Clear();
+        _undoActions.Clear();
+        _redoActions.Clear();
     }
 
     /// 指定されたストロークが現在の表示対象か確認する。
@@ -1535,7 +2751,7 @@ public partial class MainWindow : Window
         if (_selectedStroke != null &&
             !IsStrokeVisible(_selectedStroke))
         {
-            _selectedStroke = null;
+            ClearStrokeSelection();
         }
     }
 
@@ -1545,9 +2761,13 @@ public partial class MainWindow : Window
         if (MarkupVisibilityButton != null)
         {
             MarkupVisibilityButton.Content =
-                _isMarkupVisible
-                    ? "👁"
-                    : "⊘";
+                CreateIconContent(
+                    _isMarkupVisible
+                        ? "visibility-on"
+                        : "visibility-off",
+                    _isMarkupVisible
+                        ? "👁"
+                        : "⊘");
 
             MarkupVisibilityButton.ToolTip =
                 _isMarkupVisible
@@ -1563,9 +2783,13 @@ public partial class MainWindow : Window
         if (CheckVisibilityButton != null)
         {
             CheckVisibilityButton.Content =
-                _isCheckVisible
-                    ? "👁"
-                    : "⊘";
+                CreateIconContent(
+                    _isCheckVisible
+                        ? "visibility-on"
+                        : "visibility-off",
+                    _isCheckVisible
+                        ? "👁"
+                        : "⊘");
 
             CheckVisibilityButton.ToolTip =
                 _isCheckVisible
@@ -1579,24 +2803,87 @@ public partial class MainWindow : Window
         }
     }
 
-    /// 朱書きモードの表示へ切り替える。
-    private void MarkupModeButton_Checked(
+    /// 朱書きボタンで、必ず朱書き描画へ切り替える。
+    private void MarkupModeButton_Click(
         object sender,
         RoutedEventArgs e)
     {
+        ActivateDrawingMode(
+            DrawingMode.Markup);
+    }
+
+    /// チェックボタンで、必ずチェック描画へ切り替える。
+    private void CheckModeButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        ActivateDrawingMode(
+            DrawingMode.Check);
+    }
+
+    /// 指定された描画モードへ切り替え、一時ツールと注釈選択を解除する。
+    private void ActivateDrawingMode(
+        DrawingMode drawingMode)
+    {
+        CommitCommentEditUndo();
+
+        if (_selectedStroke != null)
+        {
+            ClearStrokeSelection();
+        }
+
         SaveCurrentModeSettings();
 
-        _currentDrawingMode = DrawingMode.Markup;
-        _currentStrokeColor = _lastMarkupColor;
-        _currentStrokeThickness = _lastMarkupThickness;
-        _currentStrokeOpacity = _lastMarkupOpacity;
+        _currentDrawingMode =
+            drawingMode;
+
+        if (drawingMode == DrawingMode.Markup)
+        {
+            _currentStrokeColor =
+                _lastMarkupColor;
+
+            _currentStrokeThickness =
+                _lastMarkupThickness;
+
+            _currentStrokeOpacity =
+                _lastMarkupOpacity;
+
+            // 朱書きでは口径を基本的に使用しないため未設定へ戻す。
+            SelectDiameterInRightPanel(
+                "未設定");
+        }
+        else
+        {
+            _currentStrokeColor =
+                _lastCheckColor;
+
+            _currentStrokeThickness =
+                _lastCheckThickness;
+
+            _currentStrokeOpacity =
+                _lastCheckOpacity;
+        }
+
+        SetToolMode(
+            ToolMode.Drawing);
+
+        ApplyDrawingModeAppearance();
+        UpdateDrawingModeButtonVisuals();
+        UpdateDrawingSettingsUi();
+        RedrawStrokes();
+    }
+
+    /// 現在の描画モードに応じて、画面の背景色と表示文字を更新する。
+    private void ApplyDrawingModeAppearance()
+    {
+        bool isMarkup =
+            _currentDrawingMode == DrawingMode.Markup;
 
         var modeBrush =
             new SolidColorBrush(
-                Color.FromRgb(
-                    252,
-                    232,
-                    232));
+                isMarkup
+                    ? Color.FromRgb(252, 232, 232)
+                    : Color.FromRgb(255, 246, 204));
 
         if (MainToolBarBorder != null)
         {
@@ -1619,58 +2906,58 @@ public partial class MainWindow : Window
         if (CurrentDrawingModeText != null)
         {
             CurrentDrawingModeText.Text =
-                "朱書き";
+                isMarkup
+                    ? "朱書き"
+                    : "チェック";
         }
-
-        UpdateDrawingSettingsUi();
     }
 
-    /// チェックモードの表示へ切り替える。
-    private void CheckModeButton_Checked(
-        object sender,
-        RoutedEventArgs e)
+    /// 朱書き・チェックボタンの選択表示を現在の描画モードへ合わせる。
+    private void UpdateDrawingModeButtonVisuals()
     {
-        SaveCurrentModeSettings();
-
-        _currentDrawingMode = DrawingMode.Check;
-        _currentStrokeColor = _lastCheckColor;
-        _currentStrokeThickness = _lastCheckThickness;
-        _currentStrokeOpacity = _lastCheckOpacity;
-
-        var modeBrush =
-            new SolidColorBrush(
-                Color.FromRgb(
-                    255,
-                    246,
-                    204));
-
-        if (MainToolBarBorder != null)
+        if (MarkupModeButton == null ||
+            CheckModeButton == null)
         {
-            MainToolBarBorder.Background =
-                modeBrush;
+            return;
         }
 
-        if (DrawingSettingsHeaderBorder != null)
-        {
-            DrawingSettingsHeaderBorder.Background =
-                modeBrush;
-        }
+        bool isMarkup =
+            _currentDrawingMode == DrawingMode.Markup;
 
-        if (AnnotationInfoHeaderBorder != null)
-        {
-            AnnotationInfoHeaderBorder.Background =
-                modeBrush;
-        }
+        ApplyDrawingModeButtonVisual(
+            MarkupModeButton,
+            isMarkup);
 
-        if (CurrentDrawingModeText != null)
-        {
-            CurrentDrawingModeText.Text =
-                "チェック";
-        }
-
-        UpdateDrawingSettingsUi();
+        ApplyDrawingModeButtonVisual(
+            CheckModeButton,
+            !isMarkup);
     }
 
+    /// 描画モードボタンへ選択中／未選択の見た目を反映する。
+    private static void ApplyDrawingModeButtonVisual(
+        Button button,
+        bool isSelected)
+    {
+        button.Opacity =
+            isSelected
+                ? 1.0
+                : 0.72;
+
+        button.FontWeight =
+            isSelected
+                ? FontWeights.Bold
+                : FontWeights.Normal;
+
+        button.BorderThickness =
+            isSelected
+                ? new Thickness(2)
+                : new Thickness(1);
+
+        button.BorderBrush =
+            isSelected
+                ? Brushes.Black
+                : Brushes.Gray;
+    }
 
     /// 現在モードの設定をモード別の最終値として保存する。
     private void SaveCurrentModeSettings()
@@ -1689,6 +2976,7 @@ public partial class MainWindow : Window
     }
 
     /// 色ボタンのTagに指定された色を現在の描画色へ設定する。
+    /// 注釈を選択中の場合は、その注釈の色変更としてUndo履歴へ登録する。
     private void StrokeColorButton_Click(
         object sender,
         RoutedEventArgs e)
@@ -1703,9 +2991,39 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 選択中の注釈がある場合は、その注釈の色だけを変更する。
+        // 透明度は別の編集項目として扱うため、ここでは変更しない。
+        if (_selectedStroke != null &&
+            _strokes.Contains(_selectedStroke))
+        {
+            StrokeColor oldColor =
+                _selectedStroke.Color;
+
+            if (oldColor != color)
+            {
+                _selectedStroke.Color = color;
+                _currentStrokeColor = color;
+
+                PushUndoAction(
+                    new UndoAction
+                    {
+                        Type = UndoActionType.EditColor,
+                        Stroke = _selectedStroke,
+                        OldValue = oldColor.ToString(),
+                        NewValue = color.ToString()
+                    });
+            }
+
+            SaveCurrentModeSettings();
+            UpdateDrawingSettingsUi();
+            RedrawStrokes();
+            return;
+        }
+
+        // 注釈を選択していない場合は、次に描く線の設定を変更する。
         _currentStrokeColor = color;
 
-        // 色ごとに標準透明度を保持する方針。
+        // 新規描画用の色を選んだときは、モードごとの標準透明度へ戻す。
         _currentStrokeOpacity =
             _currentDrawingMode == DrawingMode.Markup
                 ? (byte)255
@@ -1715,11 +3033,49 @@ public partial class MainWindow : Window
         UpdateDrawingSettingsUi();
     }
 
-    /// 太さスライダーの値を現在の描画太さへ設定する。
+    /// 太さスライダーのドラッグ開始時に、編集対象と変更前の値を固定する。
+    private void StrokeThicknessSlider_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (_isUpdatingDrawingSettingsUi ||
+            _selectedStroke == null ||
+            !_strokes.Contains(_selectedStroke))
+        {
+            _thicknessEditingStroke = null;
+            return;
+        }
+
+        _thicknessEditingStroke = _selectedStroke;
+        _thicknessEditOriginalValue = _selectedStroke.Thickness;
+    }
+
+    /// 太さスライダーのドラッグ終了時に、変更を1回のUndo履歴へ登録する。
+    private void StrokeThicknessSlider_PreviewMouseLeftButtonUp(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        CommitThicknessEditUndo();
+    }
+
+    /// マウスキャプチャが解除された場合も、太さ変更を確定する。
+    private void StrokeThicknessSlider_LostMouseCapture(
+        object sender,
+        MouseEventArgs e)
+    {
+        CommitThicknessEditUndo();
+    }
+
+    /// 太さスライダーの値を現在の描画太さ、または選択中注釈へ反映する。
     private void StrokeThicknessSlider_ValueChanged(
         object sender,
         RoutedPropertyChangedEventArgs<double> e)
     {
+        if (_isUpdatingDrawingSettingsUi)
+        {
+            return;
+        }
+
         double thickness =
             Math.Clamp(
                 e.NewValue,
@@ -1727,6 +3083,16 @@ public partial class MainWindow : Window
                 100.0);
 
         _currentStrokeThickness = thickness;
+
+        if (_selectedStroke != null &&
+            _strokes.Contains(_selectedStroke))
+        {
+            // ドラッグ中は見た目へ即時反映し、履歴はドラッグ終了時に1件だけ登録する。
+            _selectedStroke.Thickness = thickness;
+            _selectedStroke.RecalculateSelectionBounds();
+            RedrawStrokes();
+        }
+
         SaveCurrentModeSettings();
 
         if (StrokeThicknessText != null)
@@ -1738,20 +3104,100 @@ public partial class MainWindow : Window
         UpdateStrokeSettingPreviews();
     }
 
-    /// 透明度スライダーの値を現在の不透明度へ設定する。
+    /// 太さ変更を1回分のUndo履歴として確定する。
+    private void CommitThicknessEditUndo()
+    {
+        StrokeModel? stroke = _thicknessEditingStroke;
+        _thicknessEditingStroke = null;
+
+        if (stroke == null ||
+            !_strokes.Contains(stroke))
+        {
+            return;
+        }
+
+        double newValue = stroke.Thickness;
+
+        if (Math.Abs(
+                _thicknessEditOriginalValue - newValue) < 0.0001)
+        {
+            return;
+        }
+
+        PushUndoAction(
+            new UndoAction
+            {
+                Type = UndoActionType.EditThickness,
+                Stroke = stroke,
+                OldValue = _thicknessEditOriginalValue.ToString(
+                    CultureInfo.InvariantCulture),
+                NewValue = newValue.ToString(
+                    CultureInfo.InvariantCulture)
+            });
+    }
+
+    /// 透明度スライダーのドラッグ開始時に、編集対象と変更前の値を固定する。
+    private void StrokeOpacitySlider_PreviewMouseLeftButtonDown(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        if (_isUpdatingDrawingSettingsUi ||
+            _selectedStroke == null ||
+            !_strokes.Contains(_selectedStroke))
+        {
+            _opacityEditingStroke = null;
+            return;
+        }
+
+        _opacityEditingStroke = _selectedStroke;
+        _opacityEditOriginalValue = _selectedStroke.Opacity;
+    }
+
+    /// 透明度スライダーのドラッグ終了時に、変更を1回のUndo履歴へ登録する。
+    private void StrokeOpacitySlider_PreviewMouseLeftButtonUp(
+        object sender,
+        MouseButtonEventArgs e)
+    {
+        CommitOpacityEditUndo();
+    }
+
+    /// マウスキャプチャが解除された場合も、透明度変更を確定する。
+    private void StrokeOpacitySlider_LostMouseCapture(
+        object sender,
+        MouseEventArgs e)
+    {
+        CommitOpacityEditUndo();
+    }
+
+    /// 透明度スライダーの値を現在の不透明度、または選択中注釈へ反映する。
     private void StrokeOpacitySlider_ValueChanged(
         object sender,
         RoutedPropertyChangedEventArgs<double> e)
     {
+        if (_isUpdatingDrawingSettingsUi)
+        {
+            return;
+        }
+
         double percent =
             Math.Clamp(
                 e.NewValue,
                 0,
                 100);
 
-        _currentStrokeOpacity =
+        byte opacity =
             (byte)Math.Round(
                 percent / 100.0 * 255.0);
+
+        _currentStrokeOpacity = opacity;
+
+        if (_selectedStroke != null &&
+            _strokes.Contains(_selectedStroke))
+        {
+            // ドラッグ中は見た目へ即時反映し、履歴はドラッグ終了時に1件だけ登録する。
+            _selectedStroke.Opacity = opacity;
+            RedrawStrokes();
+        }
 
         SaveCurrentModeSettings();
 
@@ -1762,6 +3208,37 @@ public partial class MainWindow : Window
         }
 
         UpdateStrokeSettingPreviews();
+    }
+
+    /// 透明度変更を1回分のUndo履歴として確定する。
+    private void CommitOpacityEditUndo()
+    {
+        StrokeModel? stroke = _opacityEditingStroke;
+        _opacityEditingStroke = null;
+
+        if (stroke == null ||
+            !_strokes.Contains(stroke))
+        {
+            return;
+        }
+
+        byte newValue = stroke.Opacity;
+
+        if (_opacityEditOriginalValue == newValue)
+        {
+            return;
+        }
+
+        PushUndoAction(
+            new UndoAction
+            {
+                Type = UndoActionType.EditOpacity,
+                Stroke = stroke,
+                OldValue = _opacityEditOriginalValue.ToString(
+                    CultureInfo.InvariantCulture),
+                NewValue = newValue.ToString(
+                    CultureInfo.InvariantCulture)
+            });
     }
 
     /// 現在選択されている色ボタンだけを選択表示にする。
@@ -1851,65 +3328,224 @@ public partial class MainWindow : Window
     /// 現在の描画設定を右パネルへ反映する。
     private void UpdateDrawingSettingsUi()
     {
-        if (MarkupColorPalette != null)
+        _isUpdatingDrawingSettingsUi = true;
+
+        try
         {
-            MarkupColorPalette.Visibility =
-                _currentDrawingMode == DrawingMode.Markup
-                    ? Visibility.Visible
-                    : Visibility.Collapsed;
-        }
+            if (MarkupColorPalette != null)
+            {
+                MarkupColorPalette.Visibility =
+                    _currentDrawingMode == DrawingMode.Markup
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
+            }
 
-        if (CheckColorPalette != null)
+            if (CheckColorPalette != null)
+            {
+                CheckColorPalette.Visibility =
+                    _currentDrawingMode == DrawingMode.Check
+                        ? Visibility.Visible
+                        : Visibility.Collapsed;
+            }
+
+            if (StrokeThicknessSlider != null)
+            {
+                StrokeThicknessSlider.Value =
+                    Math.Clamp(
+                        _currentStrokeThickness,
+                        StrokeThicknessSlider.Minimum,
+                        StrokeThicknessSlider.Maximum);
+            }
+
+            if (StrokeThicknessText != null)
+            {
+                StrokeThicknessText.Text =
+                    _currentStrokeThickness.ToString("0.0");
+            }
+
+            double opacityPercent =
+                _currentStrokeOpacity / 255.0 * 100.0;
+
+            if (StrokeOpacitySlider != null)
+            {
+                StrokeOpacitySlider.Value =
+                    Math.Clamp(
+                        opacityPercent,
+                        StrokeOpacitySlider.Minimum,
+                        StrokeOpacitySlider.Maximum);
+            }
+
+            if (StrokeOpacityText != null)
+            {
+                StrokeOpacityText.Text =
+                    $"{opacityPercent:0}%";
+            }
+
+            UpdateColorPaletteSelection();
+            UpdateStrokeSettingPreviews();
+        }
+        finally
         {
-            CheckColorPalette.Visibility =
-                _currentDrawingMode == DrawingMode.Check
-                    ? Visibility.Visible
-                    : Visibility.Collapsed;
+            _isUpdatingDrawingSettingsUi = false;
         }
-
-        if (StrokeThicknessSlider != null)
-        {
-            StrokeThicknessSlider.Value =
-                Math.Clamp(
-                    _currentStrokeThickness,
-                    StrokeThicknessSlider.Minimum,
-                    StrokeThicknessSlider.Maximum);
-        }
-
-        if (StrokeThicknessText != null)
-        {
-            StrokeThicknessText.Text =
-                _currentStrokeThickness.ToString("0.0");
-        }
-
-        double opacityPercent =
-            _currentStrokeOpacity / 255.0 * 100.0;
-
-        if (StrokeOpacitySlider != null)
-        {
-            StrokeOpacitySlider.Value =
-                Math.Clamp(
-                    opacityPercent,
-                    StrokeOpacitySlider.Minimum,
-                    StrokeOpacitySlider.Maximum);
-        }
-
-        if (StrokeOpacityText != null)
-        {
-            StrokeOpacityText.Text =
-                $"{opacityPercent:0}%";
-        }
-
-        UpdateColorPaletteSelection();
-        UpdateStrokeSettingPreviews();
     }
 
-    /// ページ一覧の選択変更を受け取る。
+    /// PDFの全ページ分のサムネイル項目を先に作成する。
+    private void PreparePageThumbnailItems()
+    {
+        _pageThumbnails.Clear();
+
+        for (int pageIndex = 0;
+            pageIndex < _pageCount;
+            pageIndex++)
+        {
+            _pageThumbnails.Add(
+                new PageThumbnailItem
+                {
+                    PageIndex = pageIndex
+                });
+        }
+
+        PageListEmptyText.Visibility =
+            _pageThumbnails.Count == 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+    }
+
+    /// 全ページのサムネイルをバックグラウンドで順番に生成する。
+    private void StartThumbnailGeneration()
+    {
+        if (string.IsNullOrWhiteSpace(_currentPdfPath) ||
+            _pageThumbnails.Count == 0)
+        {
+            return;
+        }
+
+        _thumbnailCancellation =
+            new CancellationTokenSource();
+
+        string pdfPath =
+            _currentPdfPath;
+
+        CancellationToken cancellationToken =
+            _thumbnailCancellation.Token;
+
+        _ = GenerateThumbnailsAsync(
+            pdfPath,
+            cancellationToken);
+    }
+
+    /// サムネイル画像を順番に生成してページ一覧へ反映する。
+    private async Task GenerateThumbnailsAsync(
+        string pdfPath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            for (int pageIndex = 0;
+                pageIndex < _pageThumbnails.Count;
+                pageIndex++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                int targetPageIndex =
+                    pageIndex;
+
+                BitmapImage thumbnail =
+                    await Task.Run(
+                        () => _pdfService.RenderThumbnail(
+                            pdfPath,
+                            targetPageIndex,
+                            160),
+                        cancellationToken);
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (!string.Equals(
+                        _currentPdfPath,
+                        pdfPath,
+                        StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                _pageThumbnails[targetPageIndex].Thumbnail =
+                    thumbnail;
+
+                // 現在ページを優先表示しつつ、UIへ描画時間を返す。
+                await Dispatcher.Yield(
+                    DispatcherPriority.Background);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // PDFを開き直した場合は、古い生成処理を静かに終了する。
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text =
+                $"サムネイル生成エラー: {ex.Message}";
+        }
+    }
+
+    /// 実行中のサムネイル生成を停止する。
+    private void CancelThumbnailGeneration()
+    {
+        if (_thumbnailCancellation == null)
+        {
+            return;
+        }
+
+        _thumbnailCancellation.Cancel();
+        _thumbnailCancellation.Dispose();
+        _thumbnailCancellation = null;
+    }
+
+    /// 現在ページとページ一覧の選択位置を同期する。
+    private void SyncPageListSelection()
+    {
+        if (_currentPageIndex < 0 ||
+            _currentPageIndex >= _pageThumbnails.Count)
+        {
+            return;
+        }
+
+        _isUpdatingPageListSelection = true;
+
+        try
+        {
+            PageThumbnailItem currentItem =
+                _pageThumbnails[_currentPageIndex];
+
+            PageListBox.SelectedItem =
+                currentItem;
+
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Loaded,
+                new Action(() =>
+                    PageListBox.ScrollIntoView(
+                        currentItem)));
+        }
+        finally
+        {
+            _isUpdatingPageListSelection = false;
+        }
+    }
+
+    /// ページ一覧で選択したサムネイルのページへ移動する。
     private void PageListBox_SelectionChanged(
         object sender,
-        System.Windows.Controls.SelectionChangedEventArgs e)
+        SelectionChangedEventArgs e)
     {
-        // ページ一覧の実装時に、選択ページへの移動処理を追加する。
+        if (_isUpdatingPageListSelection ||
+            PageListBox.SelectedItem is not PageThumbnailItem selectedItem ||
+            selectedItem.PageIndex == _currentPageIndex)
+        {
+            return;
+        }
+
+        ChangePage(
+            selectedItem.PageIndex);
     }
 
 
@@ -1937,7 +3573,9 @@ public partial class MainWindow : Window
                 false;
 
             ToggleLeftPanelButton.Content =
-                "▶";
+                CreateIconContent(
+                    "panel-left-open",
+                    "▶");
 
             ToggleLeftPanelButton.ToolTip =
                 "ページ一覧を開く";
@@ -1957,7 +3595,9 @@ public partial class MainWindow : Window
                 true;
 
             ToggleLeftPanelButton.Content =
-                "◀";
+                CreateIconContent(
+                    "panel-left-close",
+                    "◀");
 
             ToggleLeftPanelButton.ToolTip =
                 "ページ一覧を閉じる";
@@ -1991,7 +3631,9 @@ public partial class MainWindow : Window
                 false;
 
             ToggleRightPanelButton.Content =
-                "◀";
+                CreateIconContent(
+                    "panel-right-open",
+                    "◀");
 
             ToggleRightPanelButton.ToolTip =
                 "設定パネルを開く";
@@ -2011,7 +3653,9 @@ public partial class MainWindow : Window
                 true;
 
             ToggleRightPanelButton.Content =
-                "▶";
+                CreateIconContent(
+                    "panel-right-close",
+                    "▶");
 
             ToggleRightPanelButton.ToolTip =
                 "設定パネルを閉じる";
