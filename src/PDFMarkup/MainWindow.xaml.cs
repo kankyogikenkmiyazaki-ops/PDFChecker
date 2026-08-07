@@ -129,6 +129,23 @@ public partial class MainWindow : Window
     private StrokeModel? _currentStrokeModel;
     private Polyline? _currentStrokeView;
 
+    // 直線・矢印描画時のプレビューに使用するシャドウ線。
+    private Line? _shadowLine;
+
+    // 矢印プレビューの始点側に表示する2本の矢羽根。
+    private Line? _shadowArrowHeadLine1;
+    private Line? _shadowArrowHeadLine2;
+
+    // 現在Ctrl+Shiftによる矢印プレビュー中かを表す。
+    private bool _isArrowPreviewActive;
+
+    // 現在描画中ストロークの開始位置。
+    // Shift直線プレビューは常にこの位置から現在位置まで表示する。
+    private Point _drawingStartCanvasPoint;
+
+    // 現在、Shiftによる直線プレビュー中かを表す。
+    private bool _isStraightPreviewActive;
+
     // 現在選択されている注釈。
     private StrokeModel? _selectedStroke;
 
@@ -211,6 +228,21 @@ public partial class MainWindow : Window
     private const double MaximumZoomFactor = 5.0;
     private const double ZoomStep = 1.2;
 
+    // 8方向スナップの吸着許容角度。
+    private const double SnapAngleToleranceDegrees = 7.5;
+
+    // A3長辺のPDFポイント値（420mm）。
+    // A4はA3と同じ1.0倍とし、それより大きいページだけ自動拡大する。
+    private const double A3LongSidePdfPoints = 1190.55;
+
+    // A3基準の矢印サイズ（PDFポイント）。
+    // PDF上の実寸として保持するため、描画時のズーム倍率には左右されない。
+    private const double BaseArrowLengthPdfPoints = 16.0;
+    private const double BaseArrowHalfWidthPdfPoints = 7.0;
+
+    // 将来、右パネルの「小・標準・大」などから変更するための倍率。
+    private double _arrowUserScale = 1.0;
+
     // 左右パネルの開閉状態と復元用の幅
     private bool _isLeftPanelOpen = true;
     private bool _isRightPanelOpen = true;
@@ -279,6 +311,9 @@ public partial class MainWindow : Window
 
         // Escキーで選択中の注釈を解除できるようにする。
         PreviewKeyDown += MainWindow_PreviewKeyDown;
+
+        // Shiftを離した瞬間に直線プレビューをキャンセルする。
+        PreviewKeyUp += MainWindow_PreviewKeyUp;
 
         // 太さスライダーのドラッグ開始から終了までを、1回の編集として扱う。
         StrokeThicknessSlider.PreviewMouseLeftButtonDown +=
@@ -877,18 +912,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Shiftを押しながらクリックした場合は、注釈の選択だけを解除する。
-        if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
-        {
-            // 編集中のコメントを確定してからページを移動する。
-            CommitCommentEditUndo();
-            
-            ClearStrokeSelection();
-            RedrawStrokes();
-            e.Handled = true;
-            return;
-        }
-
         // 選択モードでは、クリックした注釈だけを選択する。
         // 空白部分をクリックした場合は選択を解除する。
         if (_currentToolMode == ToolMode.Select)
@@ -939,6 +962,8 @@ public partial class MainWindow : Window
         ClearStrokeSelection();
         _isDrawing = true;
         _lastCanvasPoint = canvasPoint;
+        _isStraightPreviewActive = false;
+        _isArrowPreviewActive = false;
 
         _currentStrokeModel =
             CreateStrokeFromCurrentSettings();
@@ -974,11 +999,698 @@ public partial class MainWindow : Window
         DrawingCanvas.Children.Add(
             _currentStrokeView);
 
+        // Shiftを押した状態で描画を開始した場合は、
+        // 現在までの軌跡を保存して直線プレビューへ切り替える。
+        if (IsShiftPressed())
+        {
+            BeginStraightPreview();
+        }
+
         // Canvas外へマウスが移動しても描画終了を取得できるようにする。
         DrawingCanvas.CaptureMouse();
     }
 
-    /// 描画中のストロークへ点を追加する。
+    /// Shiftキーが現在押されているか確認する。
+    private static bool IsShiftPressed()
+    {
+        return (Keyboard.Modifiers & ModifierKeys.Shift) ==
+               ModifierKeys.Shift;
+    }
+
+    /// Ctrlキーが現在押されているか確認する。
+    private static bool IsControlPressed()
+    {
+        return (Keyboard.Modifiers & ModifierKeys.Control) ==
+               ModifierKeys.Control;
+    }
+
+    /// Ctrl+Shiftが現在押されているか確認する。
+    private static bool IsArrowShortcutPressed()
+    {
+        return IsShiftPressed() &&
+               IsControlPressed();
+    }
+
+    /// Shift切替時点までのフリーハンド軌跡を保存し、
+    /// ストローク開始点からの直線プレビューを開始する。
+    private void BeginStraightPreview()
+    {
+        if (_isStraightPreviewActive ||
+            _currentStrokeModel == null ||
+            _currentStrokeView == null ||
+            _currentStrokeView.Points.Count == 0)
+        {
+            return;
+        }
+
+        // 直線プレビューの始点は、
+        // Shiftを押した位置ではなく常にストローク開始点とする。
+        _drawingStartCanvasPoint =
+            _currentStrokeView.Points[0];
+
+        _isStraightPreviewActive = true;
+        _isArrowPreviewActive =
+            IsArrowShortcutPressed();
+
+        // Shift中は保存済みのフリーハンド軌跡を一時的に隠し、
+        // 直線プレビューだけを表示する。
+        _currentStrokeView.Visibility =
+            Visibility.Hidden;
+
+        CreateShadowLine(
+            _drawingStartCanvasPoint);
+    }
+
+    /// Shiftを離したとき、現在描画中の1ストロークを破棄する。
+    /// ペンタブ操作ではカーソル位置を元へ戻さず、描き直す仕様とする。
+    private void CancelCurrentDrawing()
+    {
+        if (!_isDrawing)
+        {
+            return;
+        }
+
+        RemoveShadowLine();
+
+        if (_currentStrokeModel != null)
+        {
+            _strokes.Remove(
+                _currentStrokeModel);
+        }
+
+        if (_currentStrokeView != null)
+        {
+            DrawingCanvas.Children.Remove(
+                _currentStrokeView);
+        }
+
+        _isStraightPreviewActive = false;
+        _isArrowPreviewActive = false;
+        _isDrawing = false;
+
+        _currentStrokeModel = null;
+        _currentStrokeView = null;
+
+        if (DrawingCanvas.IsMouseCaptured)
+        {
+            DrawingCanvas.ReleaseMouseCapture();
+        }
+
+        RedrawStrokes();
+    }
+
+    /// Shiftを押したまま描画終了した場合、
+    /// ストローク開始点から終了位置までの直線として確定する。
+    private void CommitStraightPreview(
+        Point endPoint)
+    {
+        if (!_isStraightPreviewActive ||
+            _currentStrokeModel == null ||
+            _currentStrokeView == null)
+        {
+            return;
+        }
+
+        Point startPdfPoint =
+            ConvertCanvasPointToPdfPoint(
+                _drawingStartCanvasPoint);
+
+        Point snappedEndPoint =
+            SnapToEightDirections(
+                _drawingStartCanvasPoint,
+                endPoint);
+
+        Point endPdfPoint =
+            ConvertCanvasPointToPdfPoint(
+                snappedEndPoint);
+
+        _currentStrokeModel.PdfPoints.Clear();
+        _currentStrokeModel.PdfPoints.Add(
+            startPdfPoint);
+        _currentStrokeModel.PdfPoints.Add(
+            endPdfPoint);
+
+        _currentStrokeView.Points.Clear();
+        _currentStrokeView.Points.Add(
+            _drawingStartCanvasPoint);
+        _currentStrokeView.Points.Add(
+            snappedEndPoint);
+
+        _currentStrokeView.Visibility =
+            Visibility.Visible;
+
+        _lastCanvasPoint =
+            snappedEndPoint;
+
+        _isStraightPreviewActive = false;
+        _isArrowPreviewActive = false;
+        RemoveShadowLine();
+    }
+
+    /// Ctrl+Shiftを押したまま描画終了した場合、
+    /// ストローク開始点側に矢印を付けて確定する。
+    private void CommitArrowPreview(
+        Point endPoint)
+    {
+        if (!_isStraightPreviewActive ||
+            _currentStrokeModel == null ||
+            _currentStrokeView == null)
+        {
+            return;
+        }
+
+        Point snappedEndPoint =
+            SnapToEightDirections(
+                _drawingStartCanvasPoint,
+                endPoint);
+
+        (Point arrowPoint1, Point arrowPoint2) =
+            GetStartArrowHeadPoints(
+                _drawingStartCanvasPoint,
+                snappedEndPoint);
+
+        Point arrowPdfPoint1 =
+            ConvertCanvasPointToPdfPoint(
+                arrowPoint1);
+
+        Point startPdfPoint =
+            ConvertCanvasPointToPdfPoint(
+                _drawingStartCanvasPoint);
+
+        Point arrowPdfPoint2 =
+            ConvertCanvasPointToPdfPoint(
+                arrowPoint2);
+
+        Point endPdfPoint =
+            ConvertCanvasPointToPdfPoint(
+                snappedEndPoint);
+
+        // 1本のInk注釈として保存できるよう、
+        // 矢羽根1→始点→矢羽根2→始点→終点の順で点列を作る。
+        _currentStrokeModel.PdfPoints.Clear();
+        _currentStrokeModel.PdfPoints.Add(
+            arrowPdfPoint1);
+        _currentStrokeModel.PdfPoints.Add(
+            startPdfPoint);
+        _currentStrokeModel.PdfPoints.Add(
+            arrowPdfPoint2);
+        _currentStrokeModel.PdfPoints.Add(
+            startPdfPoint);
+        _currentStrokeModel.PdfPoints.Add(
+            endPdfPoint);
+
+        _currentStrokeView.Points.Clear();
+        _currentStrokeView.Points.Add(
+            arrowPoint1);
+        _currentStrokeView.Points.Add(
+            _drawingStartCanvasPoint);
+        _currentStrokeView.Points.Add(
+            arrowPoint2);
+        _currentStrokeView.Points.Add(
+            _drawingStartCanvasPoint);
+        _currentStrokeView.Points.Add(
+            snappedEndPoint);
+
+        _currentStrokeView.Visibility =
+            Visibility.Visible;
+
+        _lastCanvasPoint =
+            snappedEndPoint;
+
+        _isStraightPreviewActive = false;
+        _isArrowPreviewActive = false;
+        RemoveShadowLine();
+    }
+
+    /// 現在ページの用紙サイズから、A3基準の矢印自動倍率を取得する。
+    /// A4以下は1.0倍、A2は約1.4倍、A1は約2.0倍、A0は約2.8倍となる。
+    private double GetArrowPaperScale()
+    {
+        if (_pdfPageWidth <= 0 ||
+            _pdfPageHeight <= 0)
+        {
+            return 1.0;
+        }
+
+        double longSide =
+            Math.Max(
+                _pdfPageWidth,
+                _pdfPageHeight);
+
+        return Math.Max(
+            1.0,
+            longSide / A3LongSidePdfPoints);
+    }
+
+    /// PDFポイントで定義した矢印サイズを、現在のCanvas表示サイズへ変換する。
+    /// これにより、どのズーム倍率で描いてもPDF保存後の矢印実寸は一定になる。
+    private (double Length, double HalfWidth) GetArrowSizeInCanvas()
+    {
+        double canvasWidth =
+            DrawingCanvas.ActualWidth;
+
+        double canvasHeight =
+            DrawingCanvas.ActualHeight;
+
+        double canvasScaleX =
+            _pdfPageWidth > 0
+                ? canvasWidth / _pdfPageWidth
+                : 1.0;
+
+        double canvasScaleY =
+            _pdfPageHeight > 0
+                ? canvasHeight / _pdfPageHeight
+                : canvasScaleX;
+
+        // PDFとCanvasは同じ縦横比で表示しているため、平均倍率を使用する。
+        double canvasScale =
+            Math.Max(
+                0.0001,
+                (canvasScaleX + canvasScaleY) / 2.0);
+
+        double paperScale =
+            GetArrowPaperScale();
+
+        double totalScale =
+            paperScale *
+            _arrowUserScale;
+
+        double arrowLengthPdf =
+            BaseArrowLengthPdfPoints *
+            totalScale;
+
+        double arrowHalfWidthPdf =
+            BaseArrowHalfWidthPdfPoints *
+            totalScale;
+
+        return (
+            arrowLengthPdf * canvasScale,
+            arrowHalfWidthPdf * canvasScale);
+    }
+
+    /// 現在ページの実寸基準サイズで、始点側の矢羽根端点を計算する。
+    private (Point Point1, Point Point2) GetStartArrowHeadPoints(
+        Point startPoint,
+        Point endPoint)
+    {
+        double deltaX =
+            endPoint.X - startPoint.X;
+
+        double deltaY =
+            endPoint.Y - startPoint.Y;
+
+        double distance =
+            Math.Sqrt(
+                deltaX * deltaX +
+                deltaY * deltaY);
+
+        if (distance < 0.0001)
+        {
+            return (
+                startPoint,
+                startPoint);
+        }
+
+        double unitX =
+            deltaX / distance;
+
+        double unitY =
+            deltaY / distance;
+
+        double perpendicularX =
+            -unitY;
+
+        double perpendicularY =
+            unitX;
+
+        (double arrowLength, double arrowHalfWidth) =
+            GetArrowSizeInCanvas();
+
+        Point basePoint =
+            new Point(
+                startPoint.X +
+                unitX * arrowLength,
+                startPoint.Y +
+                unitY * arrowLength);
+
+        Point point1 =
+            new Point(
+                basePoint.X +
+                perpendicularX * arrowHalfWidth,
+                basePoint.Y +
+                perpendicularY * arrowHalfWidth);
+
+        Point point2 =
+            new Point(
+                basePoint.X -
+                perpendicularX * arrowHalfWidth,
+                basePoint.Y -
+                perpendicularY * arrowHalfWidth);
+
+        return (
+            point1,
+            point2);
+    }
+
+    /// 現在位置を描画中ストロークへ1点追加する。
+    private void AddCurrentDrawingPoint(
+        Point canvasPoint)
+    {
+        if (_currentStrokeModel == null ||
+            _currentStrokeView == null)
+        {
+            return;
+        }
+
+        double distanceX =
+            canvasPoint.X - _lastCanvasPoint.X;
+
+        double distanceY =
+            canvasPoint.Y - _lastCanvasPoint.Y;
+
+        double distance =
+            Math.Sqrt(
+                distanceX * distanceX +
+                distanceY * distanceY);
+
+        // 点が増えすぎないよう、小さな移動は記録しない。
+        if (distance < 2.0)
+        {
+            return;
+        }
+
+        Point pdfPoint =
+            ConvertCanvasPointToPdfPoint(
+                canvasPoint);
+
+        _currentStrokeModel.PdfPoints.Add(
+            pdfPoint);
+
+        _currentStrokeView.Points.Add(
+            canvasPoint);
+
+        _lastCanvasPoint =
+            canvasPoint;
+    }
+
+    /// 指定位置から現在位置までを示すシャドウ線を作成する。
+    private void CreateShadowLine(
+        Point startPoint)
+    {
+        RemoveShadowLine();
+
+        _shadowLine =
+            new Line
+            {
+                X1 = startPoint.X,
+                Y1 = startPoint.Y,
+                X2 = startPoint.X,
+                Y2 = startPoint.Y,
+
+                Stroke =
+                    CreateStrokeBrush(
+                        _currentStrokeColor,
+                        120),
+
+                StrokeThickness =
+                    Math.Max(
+                        1.0,
+                        _currentStrokeThickness),
+
+                StrokeDashArray =
+                    new DoubleCollection
+                    {
+                        4,
+                        3
+                    },
+
+                IsHitTestVisible = false
+            };
+
+        DrawingCanvas.Children.Add(
+            _shadowLine);
+    }
+
+    /// シャドウ線の終点を現在のポインター位置へ更新する。
+    /// 8方向に近い場合だけスナップし、それ以外は自由角度のまま表示する。
+    private void UpdateShadowLine(
+        Point currentPoint)
+    {
+        if (_shadowLine == null)
+        {
+            return;
+        }
+
+        Point displayPoint =
+            SnapToEightDirections(
+                _drawingStartCanvasPoint,
+                currentPoint);
+
+        bool isSnapped =
+            Math.Abs(displayPoint.X - currentPoint.X) > 0.01 ||
+            Math.Abs(displayPoint.Y - currentPoint.Y) > 0.01;
+
+        // 自由角度は点線、8方向へ吸着したら実線にする。
+        _shadowLine.StrokeDashArray =
+            isSnapped
+                ? null
+                : new DoubleCollection { 4, 3 };
+
+        if (_isArrowPreviewActive)
+        {
+            UpdateShadowArrowHead(
+                _drawingStartCanvasPoint,
+                displayPoint,
+                isSnapped);
+        }
+        else
+        {
+            RemoveShadowArrowHead();
+        }
+
+        _shadowLine.X1 =
+            _drawingStartCanvasPoint.X;
+
+        _shadowLine.Y1 =
+            _drawingStartCanvasPoint.Y;
+
+        _shadowLine.X2 =
+            displayPoint.X;
+
+        _shadowLine.Y2 =
+            displayPoint.Y;
+    }
+
+    /// 始点側へ矢印プレビューの矢羽根を表示する。
+    private void UpdateShadowArrowHead(
+        Point startPoint,
+        Point endPoint,
+        bool isSnapped)
+    {
+        (Point point1, Point point2) =
+            GetStartArrowHeadPoints(
+                startPoint,
+                endPoint);
+
+        if (_shadowArrowHeadLine1 == null)
+        {
+            _shadowArrowHeadLine1 =
+                CreateShadowArrowHeadLine();
+
+            DrawingCanvas.Children.Add(
+                _shadowArrowHeadLine1);
+        }
+
+        if (_shadowArrowHeadLine2 == null)
+        {
+            _shadowArrowHeadLine2 =
+                CreateShadowArrowHeadLine();
+
+            DrawingCanvas.Children.Add(
+                _shadowArrowHeadLine2);
+        }
+
+        DoubleCollection? dashArray =
+            isSnapped
+                ? null
+                : new DoubleCollection { 4, 3 };
+
+        _shadowArrowHeadLine1.StrokeDashArray =
+            dashArray;
+
+        _shadowArrowHeadLine2.StrokeDashArray =
+            isSnapped
+                ? null
+                : new DoubleCollection { 4, 3 };
+
+        _shadowArrowHeadLine1.X1 =
+            startPoint.X;
+
+        _shadowArrowHeadLine1.Y1 =
+            startPoint.Y;
+
+        _shadowArrowHeadLine1.X2 =
+            point1.X;
+
+        _shadowArrowHeadLine1.Y2 =
+            point1.Y;
+
+        _shadowArrowHeadLine2.X1 =
+            startPoint.X;
+
+        _shadowArrowHeadLine2.Y1 =
+            startPoint.Y;
+
+        _shadowArrowHeadLine2.X2 =
+            point2.X;
+
+        _shadowArrowHeadLine2.Y2 =
+            point2.Y;
+    }
+
+    /// 矢印プレビュー用の矢羽根Lineを作成する。
+    private Line CreateShadowArrowHeadLine()
+    {
+        return new Line
+        {
+            Stroke =
+                CreateStrokeBrush(
+                    _currentStrokeColor,
+                    120),
+
+            StrokeThickness =
+                Math.Max(
+                    1.0,
+                    _currentStrokeThickness),
+
+            IsHitTestVisible = false
+        };
+    }
+
+    /// 表示中の矢印プレビューの矢羽根を削除する。
+    private void RemoveShadowArrowHead()
+    {
+        if (_shadowArrowHeadLine1 != null)
+        {
+            DrawingCanvas.Children.Remove(
+                _shadowArrowHeadLine1);
+
+            _shadowArrowHeadLine1 = null;
+        }
+
+        if (_shadowArrowHeadLine2 != null)
+        {
+            DrawingCanvas.Children.Remove(
+                _shadowArrowHeadLine2);
+
+            _shadowArrowHeadLine2 = null;
+        }
+    }
+
+    /// 指定された点が8方向に近い場合、最寄りの45度方向へ吸着させる。
+    private static Point SnapToEightDirections(
+        Point startPoint,
+        Point currentPoint)
+    {
+        double deltaX =
+            currentPoint.X - startPoint.X;
+
+        double deltaY =
+            currentPoint.Y - startPoint.Y;
+
+        double distance =
+            Math.Sqrt(
+                deltaX * deltaX +
+                deltaY * deltaY);
+
+        if (distance < 0.0001)
+        {
+            return currentPoint;
+        }
+
+        double angleDegrees =
+            Math.Atan2(
+                deltaY,
+                deltaX) *
+            180.0 /
+            Math.PI;
+
+        if (angleDegrees < 0)
+        {
+            angleDegrees += 360.0;
+        }
+
+        double snappedAngleDegrees =
+            Math.Round(
+                angleDegrees / 45.0) *
+            45.0;
+
+        if (snappedAngleDegrees >= 360.0)
+        {
+            snappedAngleDegrees = 0.0;
+        }
+
+        double angleDifference =
+            Math.Abs(
+                NormalizeAngleDifference(
+                    angleDegrees -
+                    snappedAngleDegrees));
+
+        if (angleDifference >
+            SnapAngleToleranceDegrees)
+        {
+            return currentPoint;
+        }
+
+        double snappedAngleRadians =
+            snappedAngleDegrees *
+            Math.PI /
+            180.0;
+
+        return new Point(
+            startPoint.X +
+            Math.Cos(snappedAngleRadians) *
+            distance,
+
+            startPoint.Y +
+            Math.Sin(snappedAngleRadians) *
+            distance);
+    }
+
+    /// 角度差を-180度～180度の範囲へ正規化する。
+    private static double NormalizeAngleDifference(
+        double angleDegrees)
+    {
+        while (angleDegrees > 180.0)
+        {
+            angleDegrees -= 360.0;
+        }
+
+        while (angleDegrees < -180.0)
+        {
+            angleDegrees += 360.0;
+        }
+
+        return angleDegrees;
+    }
+
+    /// 表示中のシャドウ線をCanvasから削除する。
+    private void RemoveShadowLine()
+    {
+        RemoveShadowArrowHead();
+
+        if (_shadowLine == null)
+        {
+            return;
+        }
+
+        DrawingCanvas.Children.Remove(
+            _shadowLine);
+
+        _shadowLine = null;
+    }
+
+    /// 描画中のストロークまたはShift直線プレビューを更新する。
     private void DrawingCanvas_MouseMove(
         object sender,
         MouseEventArgs e)
@@ -996,30 +1708,35 @@ public partial class MainWindow : Window
         canvasPoint =
             ClampCanvasPoint(canvasPoint);
 
-        double distanceX =
-            canvasPoint.X - _lastCanvasPoint.X;
-
-        double distanceY =
-            canvasPoint.Y - _lastCanvasPoint.Y;
-
-        double distance =
-            Math.Sqrt(
-                distanceX * distanceX +
-                distanceY * distanceY);
-
-        // 点が増えすぎないよう、小さなマウス移動は記録しない。
-        if (distance < 2.0)
+        if (IsShiftPressed())
         {
+            if (!_isStraightPreviewActive)
+            {
+                BeginStraightPreview();
+            }
+
+            // Ctrl+Shiftなら始点側矢印、Shiftだけなら直線としてプレビューする。
+            _isArrowPreviewActive =
+                IsArrowShortcutPressed();
+
+            UpdateShadowLine(
+                canvasPoint);
+
             return;
         }
 
-        Point pdfPoint =
-            ConvertCanvasPointToPdfPoint(canvasPoint);
+        if (_isStraightPreviewActive)
+        {
+            // 通常はPreviewKeyUpで即時キャンセルする。
+            // キーイベントを取りこぼした場合の保険として、
+            // MouseMove側でもShift解除を検出したらキャンセルする。
+            CancelCurrentDrawing();
 
-        _currentStrokeModel.PdfPoints.Add(pdfPoint);
-        _currentStrokeView.Points.Add(canvasPoint);
+            return;
+        }
 
-        _lastCanvasPoint = canvasPoint;
+        AddCurrentDrawingPoint(
+            canvasPoint);
     }
 
     /// マウスドラッグによる描画を終了する。
@@ -1030,6 +1747,37 @@ public partial class MainWindow : Window
         if (!_isDrawing)
         {
             return;
+        }
+
+        Point endCanvasPoint =
+            ClampCanvasPoint(
+                e.GetPosition(DrawingCanvas));
+
+        // MouseMoveを経由せずShiftが押された場合にも対応する。
+        if (IsShiftPressed() &&
+            !_isStraightPreviewActive)
+        {
+            BeginStraightPreview();
+        }
+
+        if (_isStraightPreviewActive)
+        {
+            if (IsArrowShortcutPressed())
+            {
+                // Ctrl+Shiftを押したまま離した場合は、始点側矢印として確定する。
+                CommitArrowPreview(
+                    endCanvasPoint);
+            }
+            else
+            {
+                // Shiftだけを押したまま離した場合は、直線として確定する。
+                CommitStraightPreview(
+                    endCanvasPoint);
+            }
+        }
+        else
+        {
+            RemoveShadowLine();
         }
 
         _isDrawing = false;
@@ -1174,6 +1922,35 @@ public partial class MainWindow : Window
         {
             _isUpdatingAnnotationPanel = false;
         }
+    }
+
+    /// 直線・矢印プレビューで必要なキーを離した瞬間に描画をキャンセルする。
+    private void MainWindow_PreviewKeyUp(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (!_isDrawing ||
+            !_isStraightPreviewActive)
+        {
+            return;
+        }
+
+        bool releasedShift =
+            e.Key == Key.LeftShift ||
+            e.Key == Key.RightShift;
+
+        bool releasedControl =
+            e.Key == Key.LeftCtrl ||
+            e.Key == Key.RightCtrl;
+
+        if (!releasedShift &&
+            !(releasedControl && _isArrowPreviewActive))
+        {
+            return;
+        }
+
+        CancelCurrentDrawing();
+        e.Handled = true;
     }
 
     /// Escキーによる選択解除と、Deleteキーによる注釈削除を処理する。
