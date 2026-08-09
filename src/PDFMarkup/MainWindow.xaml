@@ -301,6 +301,13 @@
                     <Separator />
 
                     <!-- 描画操作 -->
+                    <Button x:Name="TextToolButton"
+                            Content="A"
+                            ToolTip="テキスト入力モード"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            FontWeight="Bold"
+                            Click="TextToolButton_Click" />
+
                     <Button x:Name="SelectToolButton"
                             Content="選択"
                             ToolTip="注釈選択モード"

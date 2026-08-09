@@ -1,5 +1,5 @@
 ﻿using Microsoft.Win32;
-using PDFMarkup.Models;
+using PDFMarkup.Services;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -16,6 +16,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using PDFMarkup.Models;
 
 using IOPath = System.IO.Path;
 
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
     private enum ToolMode
     {
         Drawing,
+        Text,
         Select,
         Eraser,
         Hand
@@ -103,6 +105,7 @@ public partial class MainWindow : Window
     
     // サービス
     private readonly PdfService _pdfService = new();
+    private readonly DrawingService _drawingService = new();
 
     // 現在ページの描画データ
     private readonly List<StrokeModel> _strokes = new();
@@ -128,6 +131,13 @@ public partial class MainWindow : Window
 
     private StrokeModel? _currentStrokeModel;
     private Polyline? _currentStrokeView;
+
+    // Textツールでクリック位置に一時表示する文字入力欄。
+    // STEP2では入力位置の確認までとし、注釈モデルへの確定は次STEPで行う。
+    private TextBox? _activeTextInput;
+
+    // 文字入力を開始したCanvas上の位置。
+    private Point _textInputCanvasPoint;
 
     // 直線・矢印描画時のプレビューに使用するシャドウ線。
     private Line? _shadowLine;
@@ -227,18 +237,6 @@ public partial class MainWindow : Window
     private const double MinimumZoomFactor = 0.25;
     private const double MaximumZoomFactor = 5.0;
     private const double ZoomStep = 1.2;
-
-    // 8方向スナップの吸着許容角度。
-    private const double SnapAngleToleranceDegrees = 7.5;
-
-    // A3長辺のPDFポイント値（420mm）。
-    // A4はA3と同じ1.0倍とし、それより大きいページだけ自動拡大する。
-    private const double A3LongSidePdfPoints = 1190.55;
-
-    // A3基準の矢印サイズ（PDFポイント）。
-    // PDF上の実寸として保持するため、描画時のズーム倍率には左右されない。
-    private const double BaseArrowLengthPdfPoints = 16.0;
-    private const double BaseArrowHalfWidthPdfPoints = 7.0;
 
     // 将来、右パネルの「小・標準・大」などから変更するための倍率。
     private double _arrowUserScale = 1.0;
@@ -907,8 +905,20 @@ public partial class MainWindow : Window
         Point canvasPoint =
             e.GetPosition(DrawingCanvas);
 
-        if (!IsCanvasPointInside(canvasPoint))
+        if (!_drawingService.IsCanvasPointInside(
+                canvasPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight))
         {
+            return;
+        }
+
+        // Textモードではクリック位置へ一時TextBoxを表示し、
+        // その場で文字入力できる状態にする。
+        if (_currentToolMode == ToolMode.Text)
+        {
+            BeginTextInput(canvasPoint);
+            e.Handled = true;
             return;
         }
 
@@ -969,7 +979,12 @@ public partial class MainWindow : Window
             CreateStrokeFromCurrentSettings();
 
         Point pdfPoint =
-            ConvertCanvasPointToPdfPoint(canvasPoint);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                canvasPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         _currentStrokeModel.PdfPoints.Add(pdfPoint);
         _strokes.Add(_currentStrokeModel);
@@ -1008,6 +1023,62 @@ public partial class MainWindow : Window
 
         // Canvas外へマウスが移動しても描画終了を取得できるようにする。
         DrawingCanvas.CaptureMouse();
+    }
+
+    /// Textツールで指定位置へ一時文字入力欄を表示する。
+    private void BeginTextInput(
+        Point canvasPoint)
+    {
+        CancelTextInput();
+
+        _textInputCanvasPoint =
+            canvasPoint;
+
+        _activeTextInput =
+            new TextBox
+            {
+                MinWidth = 90,
+                MinHeight = 26,
+                Padding = new Thickness(4, 2, 4, 2),
+                FontSize = 16,
+                Foreground =
+                    CreateStrokeBrush(
+                        _currentStrokeColor,
+                        _currentStrokeOpacity),
+                Background = Brushes.White,
+                BorderBrush = Brushes.DodgerBlue,
+                BorderThickness = new Thickness(1),
+                VerticalContentAlignment = VerticalAlignment.Center,
+                AcceptsReturn = false
+            };
+
+        Canvas.SetLeft(
+            _activeTextInput,
+            canvasPoint.X);
+
+        Canvas.SetTop(
+            _activeTextInput,
+            canvasPoint.Y);
+
+        DrawingCanvas.Children.Add(
+            _activeTextInput);
+
+        _activeTextInput.Focus();
+        Keyboard.Focus(_activeTextInput);
+    }
+
+    /// 現在表示中の一時文字入力欄を破棄する。
+    private void CancelTextInput()
+    {
+        if (_activeTextInput == null)
+        {
+            return;
+        }
+
+        DrawingCanvas.Children.Remove(
+            _activeTextInput);
+
+        _activeTextInput = null;
     }
 
     /// Shiftキーが現在押されているか確認する。
@@ -1112,17 +1183,25 @@ public partial class MainWindow : Window
         }
 
         Point startPdfPoint =
-            ConvertCanvasPointToPdfPoint(
-                _drawingStartCanvasPoint);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                _drawingStartCanvasPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         Point snappedEndPoint =
-            SnapToEightDirections(
+            _drawingService.SnapToEightDirections(
                 _drawingStartCanvasPoint,
                 endPoint);
 
         Point endPdfPoint =
-            ConvertCanvasPointToPdfPoint(
-                snappedEndPoint);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                snappedEndPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         _currentStrokeModel.PdfPoints.Clear();
         _currentStrokeModel.PdfPoints.Add(
@@ -1160,30 +1239,51 @@ public partial class MainWindow : Window
         }
 
         Point snappedEndPoint =
-            SnapToEightDirections(
+            _drawingService.SnapToEightDirections(
                 _drawingStartCanvasPoint,
                 endPoint);
 
         (Point arrowPoint1, Point arrowPoint2) =
-            GetStartArrowHeadPoints(
+            _drawingService.GetStartArrowHeadPoints(
                 _drawingStartCanvasPoint,
-                snappedEndPoint);
+                snappedEndPoint,
+                _pdfPageWidth,
+                _pdfPageHeight,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _arrowUserScale);
 
         Point arrowPdfPoint1 =
-            ConvertCanvasPointToPdfPoint(
-                arrowPoint1);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                arrowPoint1,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         Point startPdfPoint =
-            ConvertCanvasPointToPdfPoint(
-                _drawingStartCanvasPoint);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                _drawingStartCanvasPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         Point arrowPdfPoint2 =
-            ConvertCanvasPointToPdfPoint(
-                arrowPoint2);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                arrowPoint2,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         Point endPdfPoint =
-            ConvertCanvasPointToPdfPoint(
-                snappedEndPoint);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                snappedEndPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         // 1本のInk注釈として保存できるよう、
         // 矢羽根1→始点→矢羽根2→始点→終点の順で点列を作る。
@@ -1222,136 +1322,6 @@ public partial class MainWindow : Window
         RemoveShadowLine();
     }
 
-    /// 現在ページの用紙サイズから、A3基準の矢印自動倍率を取得する。
-    /// A4以下は1.0倍、A2は約1.4倍、A1は約2.0倍、A0は約2.8倍となる。
-    private double GetArrowPaperScale()
-    {
-        if (_pdfPageWidth <= 0 ||
-            _pdfPageHeight <= 0)
-        {
-            return 1.0;
-        }
-
-        double longSide =
-            Math.Max(
-                _pdfPageWidth,
-                _pdfPageHeight);
-
-        return Math.Max(
-            1.0,
-            longSide / A3LongSidePdfPoints);
-    }
-
-    /// PDFポイントで定義した矢印サイズを、現在のCanvas表示サイズへ変換する。
-    /// これにより、どのズーム倍率で描いてもPDF保存後の矢印実寸は一定になる。
-    private (double Length, double HalfWidth) GetArrowSizeInCanvas()
-    {
-        double canvasWidth =
-            DrawingCanvas.ActualWidth;
-
-        double canvasHeight =
-            DrawingCanvas.ActualHeight;
-
-        double canvasScaleX =
-            _pdfPageWidth > 0
-                ? canvasWidth / _pdfPageWidth
-                : 1.0;
-
-        double canvasScaleY =
-            _pdfPageHeight > 0
-                ? canvasHeight / _pdfPageHeight
-                : canvasScaleX;
-
-        // PDFとCanvasは同じ縦横比で表示しているため、平均倍率を使用する。
-        double canvasScale =
-            Math.Max(
-                0.0001,
-                (canvasScaleX + canvasScaleY) / 2.0);
-
-        double paperScale =
-            GetArrowPaperScale();
-
-        double totalScale =
-            paperScale *
-            _arrowUserScale;
-
-        double arrowLengthPdf =
-            BaseArrowLengthPdfPoints *
-            totalScale;
-
-        double arrowHalfWidthPdf =
-            BaseArrowHalfWidthPdfPoints *
-            totalScale;
-
-        return (
-            arrowLengthPdf * canvasScale,
-            arrowHalfWidthPdf * canvasScale);
-    }
-
-    /// 現在ページの実寸基準サイズで、始点側の矢羽根端点を計算する。
-    private (Point Point1, Point Point2) GetStartArrowHeadPoints(
-        Point startPoint,
-        Point endPoint)
-    {
-        double deltaX =
-            endPoint.X - startPoint.X;
-
-        double deltaY =
-            endPoint.Y - startPoint.Y;
-
-        double distance =
-            Math.Sqrt(
-                deltaX * deltaX +
-                deltaY * deltaY);
-
-        if (distance < 0.0001)
-        {
-            return (
-                startPoint,
-                startPoint);
-        }
-
-        double unitX =
-            deltaX / distance;
-
-        double unitY =
-            deltaY / distance;
-
-        double perpendicularX =
-            -unitY;
-
-        double perpendicularY =
-            unitX;
-
-        (double arrowLength, double arrowHalfWidth) =
-            GetArrowSizeInCanvas();
-
-        Point basePoint =
-            new Point(
-                startPoint.X +
-                unitX * arrowLength,
-                startPoint.Y +
-                unitY * arrowLength);
-
-        Point point1 =
-            new Point(
-                basePoint.X +
-                perpendicularX * arrowHalfWidth,
-                basePoint.Y +
-                perpendicularY * arrowHalfWidth);
-
-        Point point2 =
-            new Point(
-                basePoint.X -
-                perpendicularX * arrowHalfWidth,
-                basePoint.Y -
-                perpendicularY * arrowHalfWidth);
-
-        return (
-            point1,
-            point2);
-    }
-
     /// 現在位置を描画中ストロークへ1点追加する。
     private void AddCurrentDrawingPoint(
         Point canvasPoint)
@@ -1380,8 +1350,12 @@ public partial class MainWindow : Window
         }
 
         Point pdfPoint =
-            ConvertCanvasPointToPdfPoint(
-                canvasPoint);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                canvasPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         _currentStrokeModel.PdfPoints.Add(
             pdfPoint);
@@ -1442,7 +1416,7 @@ public partial class MainWindow : Window
         }
 
         Point displayPoint =
-            SnapToEightDirections(
+            _drawingService.SnapToEightDirections(
                 _drawingStartCanvasPoint,
                 currentPoint);
 
@@ -1488,9 +1462,14 @@ public partial class MainWindow : Window
         bool isSnapped)
     {
         (Point point1, Point point2) =
-            GetStartArrowHeadPoints(
+            _drawingService.GetStartArrowHeadPoints(
                 startPoint,
-                endPoint);
+                endPoint,
+                _pdfPageWidth,
+                _pdfPageHeight,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _arrowUserScale);
 
         if (_shadowArrowHeadLine1 == null)
         {
@@ -1587,93 +1566,6 @@ public partial class MainWindow : Window
         }
     }
 
-    /// 指定された点が8方向に近い場合、最寄りの45度方向へ吸着させる。
-    private static Point SnapToEightDirections(
-        Point startPoint,
-        Point currentPoint)
-    {
-        double deltaX =
-            currentPoint.X - startPoint.X;
-
-        double deltaY =
-            currentPoint.Y - startPoint.Y;
-
-        double distance =
-            Math.Sqrt(
-                deltaX * deltaX +
-                deltaY * deltaY);
-
-        if (distance < 0.0001)
-        {
-            return currentPoint;
-        }
-
-        double angleDegrees =
-            Math.Atan2(
-                deltaY,
-                deltaX) *
-            180.0 /
-            Math.PI;
-
-        if (angleDegrees < 0)
-        {
-            angleDegrees += 360.0;
-        }
-
-        double snappedAngleDegrees =
-            Math.Round(
-                angleDegrees / 45.0) *
-            45.0;
-
-        if (snappedAngleDegrees >= 360.0)
-        {
-            snappedAngleDegrees = 0.0;
-        }
-
-        double angleDifference =
-            Math.Abs(
-                NormalizeAngleDifference(
-                    angleDegrees -
-                    snappedAngleDegrees));
-
-        if (angleDifference >
-            SnapAngleToleranceDegrees)
-        {
-            return currentPoint;
-        }
-
-        double snappedAngleRadians =
-            snappedAngleDegrees *
-            Math.PI /
-            180.0;
-
-        return new Point(
-            startPoint.X +
-            Math.Cos(snappedAngleRadians) *
-            distance,
-
-            startPoint.Y +
-            Math.Sin(snappedAngleRadians) *
-            distance);
-    }
-
-    /// 角度差を-180度～180度の範囲へ正規化する。
-    private static double NormalizeAngleDifference(
-        double angleDegrees)
-    {
-        while (angleDegrees > 180.0)
-        {
-            angleDegrees -= 360.0;
-        }
-
-        while (angleDegrees < -180.0)
-        {
-            angleDegrees += 360.0;
-        }
-
-        return angleDegrees;
-    }
-
     /// 表示中のシャドウ線をCanvasから削除する。
     private void RemoveShadowLine()
     {
@@ -1706,7 +1598,10 @@ public partial class MainWindow : Window
             e.GetPosition(DrawingCanvas);
 
         canvasPoint =
-            ClampCanvasPoint(canvasPoint);
+            _drawingService.ClampCanvasPoint(
+                canvasPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight);
 
         if (IsShiftPressed())
         {
@@ -1750,8 +1645,10 @@ public partial class MainWindow : Window
         }
 
         Point endCanvasPoint =
-            ClampCanvasPoint(
-                e.GetPosition(DrawingCanvas));
+            _drawingService.ClampCanvasPoint(
+                e.GetPosition(DrawingCanvas),
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight);
 
         // MouseMoveを経由せずShiftが押された場合にも対応する。
         if (IsShiftPressed() &&
@@ -1803,78 +1700,17 @@ public partial class MainWindow : Window
         RedrawStrokes();
     }
 
-    /// Canvas座標をPDF座標へ変換する。
-    private Point ConvertCanvasPointToPdfPoint(
-        Point canvasPoint)
-    {
-        double canvasWidth =
-            DrawingCanvas.ActualWidth;
-
-        double canvasHeight =
-            DrawingCanvas.ActualHeight;
-
-        if (canvasWidth <= 0 ||
-            canvasHeight <= 0 ||
-            _pdfPageWidth <= 0 ||
-            _pdfPageHeight <= 0)
-        {
-            return new Point();
-        }
-
-        double normalizedX =
-            canvasPoint.X / canvasWidth;
-
-        double normalizedY =
-            canvasPoint.Y / canvasHeight;
-
-        double pdfX =
-            normalizedX * _pdfPageWidth;
-
-        // WPFは左上原点、PDFは左下原点のためY座標を反転する。
-        double pdfY =
-            _pdfPageHeight -
-            normalizedY * _pdfPageHeight;
-
-        return new Point(
-            pdfX,
-            pdfY);
-    }
-
-    /// 指定された座標がCanvas内か確認する。
-    private bool IsCanvasPointInside(
-        Point point)
-    {
-        return point.X >= 0 &&
-               point.X <= DrawingCanvas.ActualWidth &&
-               point.Y >= 0 &&
-               point.Y <= DrawingCanvas.ActualHeight;
-    }
-
-    /// Canvas外の座標をCanvas範囲内へ補正する。
-    private Point ClampCanvasPoint(
-        Point point)
-    {
-        double x =
-            Math.Clamp(
-                point.X,
-                0,
-                DrawingCanvas.ActualWidth);
-
-        double y =
-            Math.Clamp(
-                point.Y,
-                0,
-                DrawingCanvas.ActualHeight);
-
-        return new Point(x, y);
-    }
-
     /// 指定位置にある注釈を後から描いた順に検索する。
     private StrokeModel? FindStrokeAtCanvasPoint(
         Point canvasPoint)
     {
         Point pdfPoint =
-            ConvertCanvasPointToPdfPoint(canvasPoint);
+            _drawingService.ConvertCanvasPointToPdfPoint(
+                canvasPoint,
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         for (int index = _strokes.Count - 1;
             index >= 0;
@@ -1953,18 +1789,158 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    /// Ctrl+Shift+Iで現在ページのPDF座標系情報を調査表示する。
+    private void ShowCurrentPageInfo()
+    {
+        if (string.IsNullOrWhiteSpace(_currentPdfPath) ||
+            _currentPageIndex < 0 ||
+            _currentPageIndex >= _pageCount)
+        {
+            MessageBox.Show(
+                "先にPDFを開いてください。",
+                "ページ情報",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+
+            return;
+        }
+
+        try
+        {
+            PageInfo info =
+                _pdfService.GetPageInfo(
+                    _currentPdfPath,
+                    _currentPageIndex);
+
+            string message =
+                $"Page: {info.PageIndex + 1}\n" +
+                "\n" +
+                "[PDFium]\n" +
+                $"Width : {info.PdfiumWidth:0.###}\n" +
+                $"Height: {info.PdfiumHeight:0.###}\n" +
+                "\n" +
+                "[PDF page dictionary]\n" +
+                $"Rotate: {info.Rotation}°\n" +
+                "\n" +
+                $"MediaBox: [{info.MediaBoxLeft:0.###}, {info.MediaBoxBottom:0.###}, " +
+                $"{info.MediaBoxRight:0.###}, {info.MediaBoxTop:0.###}]\n" +
+                $"MediaBox Size: {info.MediaBoxWidth:0.###} x {info.MediaBoxHeight:0.###}\n" +
+                "\n" +
+                $"CropBox explicit: {(info.HasCropBox ? "Yes" : "No")}\n" +
+                $"CropBox: [{info.CropBoxLeft:0.###}, {info.CropBoxBottom:0.###}, " +
+                $"{info.CropBoxRight:0.###}, {info.CropBoxTop:0.###}]\n" +
+                $"CropBox Size: {info.CropBoxWidth:0.###} x {info.CropBoxHeight:0.###}\n" +
+                "\n" +
+                "[Canvas / Display]\n" +
+                $"Canvas Width : {DrawingCanvas.ActualWidth:0.###}\n" +
+                $"Canvas Height: {DrawingCanvas.ActualHeight:0.###}\n" +
+                $"PdfImage Width : {PdfImage.ActualWidth:0.###}\n" +
+                $"PdfImage Height: {PdfImage.ActualHeight:0.###}\n" +
+                $"Host Width : {PdfPageHost.ActualWidth:0.###}\n" +
+                $"Host Height: {PdfPageHost.ActualHeight:0.###}\n" +
+                "\n" +
+                $"ScaleX: {(info.PdfiumWidth > 0 ? DrawingCanvas.ActualWidth / info.PdfiumWidth : 0):0.######}\n" +
+                $"ScaleY: {(info.PdfiumHeight > 0 ? DrawingCanvas.ActualHeight / info.PdfiumHeight : 0):0.######}\n" +
+                $"Scale diff: {Math.Abs((info.PdfiumWidth > 0 ? DrawingCanvas.ActualWidth / info.PdfiumWidth : 0) - (info.PdfiumHeight > 0 ? DrawingCanvas.ActualHeight / info.PdfiumHeight : 0)):0.######}\n" +
+                $"PDF aspect   : {(info.PdfiumHeight > 0 ? info.PdfiumWidth / info.PdfiumHeight : 0):0.######}\n" +
+                $"Canvas aspect: {(DrawingCanvas.ActualHeight > 0 ? DrawingCanvas.ActualWidth / DrawingCanvas.ActualHeight : 0):0.######}\n" +
+                $"ZoomFactor: {_zoomFactor:0.###}";
+
+            MessageBox.Show(
+                message,
+                "PDFページ情報 - Ctrl+Shift+I",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"ページ情報を取得できませんでした。\n\n{ex.Message}",
+                "ページ情報取得エラー",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    /// Ctrl+Shift+Aで現在ページのInk注釈の生データを調査表示する。
+    private void ShowCurrentPageAnnotationInfo()
+    {
+        if (string.IsNullOrWhiteSpace(_currentPdfPath) ||
+            _currentPageIndex < 0 ||
+            _currentPageIndex >= _pageCount)
+        {
+            MessageBox.Show(
+                "先にPDFを開いてください。",
+                "Ink注釈情報",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+
+            return;
+        }
+
+        try
+        {
+            string message =
+                _pdfService.GetInkAnnotationDebugInfo(
+                    _currentPdfPath,
+                    _currentPageIndex,
+                    5);
+
+            MessageBox.Show(
+                message,
+                "PDF Ink注釈情報 - Ctrl+Shift+A",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Ink注釈情報を取得できませんでした。\n\n{ex.Message}",
+                "Ink注釈情報取得エラー",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
     /// Escキーによる選択解除と、Deleteキーによる注釈削除を処理する。
     private void MainWindow_PreviewKeyDown(
         object sender,
         KeyEventArgs e)
     {
+        bool isPageInfoShortcut =
+            e.Key == Key.I &&
+            (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control &&
+            (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+
+        if (isPageInfoShortcut)
+        {
+            ShowCurrentPageInfo();
+            e.Handled = true;
+            return;
+        }
+
+        bool isAnnotationInfoShortcut =
+            e.Key == Key.A &&
+            (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control &&
+            (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+
+        if (isAnnotationInfoShortcut)
+        {
+            ShowCurrentPageAnnotationInfo();
+            e.Handled = true;
+            return;
+        }
+
         if (e.Key == Key.Escape)
         {
             // 選択・消しゴム・手のひらモード中は、通常の描画モードへ戻す。
-            if (_currentToolMode == ToolMode.Select ||
+            if (_currentToolMode == ToolMode.Text ||
+                _currentToolMode == ToolMode.Select ||
                 _currentToolMode == ToolMode.Eraser ||
                 _currentToolMode == ToolMode.Hand)
             {
+                CancelTextInput();
+
                 SetToolMode(
                     ToolMode.Drawing);
 
@@ -2034,6 +2010,11 @@ public partial class MainWindow : Window
             CreateIconContent(
                 "file-save-as",
                 "別名保存");
+
+        TextToolButton.Content =
+            CreateIconContent(
+                "tool-text",
+                "A");
 
         SelectToolButton.Content =
             CreateIconContent(
@@ -2134,12 +2115,32 @@ public partial class MainWindow : Window
     {
         return toolMode switch
         {
+            ToolMode.Text => Cursors.IBeam,
             ToolMode.Select => Cursors.Arrow,
             ToolMode.Eraser => Cursors.Cross,
             ToolMode.Hand => Cursors.Hand,
             ToolMode.Drawing => Cursors.Pen,
             _ => Cursors.Arrow
         };
+    }
+
+
+    /// テキストボタンで、文字入力用の一時ツールを切り替える。
+    /// もう一度押した場合は、保持している朱書き／チェック描画へ戻る。
+    private void TextToolButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        CommitCommentEditUndo();
+        ClearStrokeSelection();
+        CancelTextInput();
+
+        SetToolMode(
+            _currentToolMode == ToolMode.Text
+                ? ToolMode.Drawing
+                : ToolMode.Text);
+
+        RedrawStrokes();
     }
 
     /// 選択ボタンで注釈選択モードを切り替える。
@@ -2181,6 +2182,30 @@ public partial class MainWindow : Window
     {
         _currentToolMode =
             toolMode;
+
+        if (TextToolButton != null)
+        {
+            bool isText =
+                toolMode == ToolMode.Text;
+
+            TextToolButton.Opacity =
+                isText
+                    ? 1.0
+                    : 0.72;
+
+            TextToolButton.FontWeight =
+                FontWeights.Bold;
+
+            TextToolButton.BorderThickness =
+                isText
+                    ? new Thickness(2)
+                    : new Thickness(1);
+
+            TextToolButton.ToolTip =
+                isText
+                    ? "テキスト入力モードを終了する"
+                    : "テキスト入力モード";
+        }
 
         if (SelectToolButton != null)
         {
@@ -2644,16 +2669,24 @@ public partial class MainWindow : Window
         }
 
         Point topLeft =
-            ConvertPdfPointToCanvasPoint(
+            _drawingService.ConvertPdfPointToCanvasPoint(
                 new Point(
                     stroke.SelectionBounds.Left,
-                    stroke.SelectionBounds.Top));
+                    stroke.SelectionBounds.Top),
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         Point bottomRight =
-            ConvertPdfPointToCanvasPoint(
+            _drawingService.ConvertPdfPointToCanvasPoint(
                 new Point(
                     stroke.SelectionBounds.Right,
-                    stroke.SelectionBounds.Bottom));
+                    stroke.SelectionBounds.Bottom),
+                DrawingCanvas.ActualWidth,
+                DrawingCanvas.ActualHeight,
+                _pdfPageWidth,
+                _pdfPageHeight);
 
         double left = Math.Min(topLeft.X, bottomRight.X);
         double top = Math.Min(topLeft.Y, bottomRight.Y);
@@ -2842,7 +2875,12 @@ public partial class MainWindow : Window
             foreach (Point pdfPoint in stroke.PdfPoints)
             {
                 Point canvasPoint =
-                    ConvertPdfPointToCanvasPoint(pdfPoint);
+                    _drawingService.ConvertPdfPointToCanvasPoint(
+                        pdfPoint,
+                        DrawingCanvas.ActualWidth,
+                        DrawingCanvas.ActualHeight,
+                        _pdfPageWidth,
+                        _pdfPageHeight);
 
                 polyline.Points.Add(canvasPoint);
             }
@@ -2856,37 +2894,6 @@ public partial class MainWindow : Window
         {
             DrawSelectionAdorner(_selectedStroke);
         }
-    }
-
-    /// PDF座標をCanvas座標へ変換する。
-    private Point ConvertPdfPointToCanvasPoint(
-        Point pdfPoint)
-    {
-        double canvasWidth =
-            DrawingCanvas.ActualWidth;
-
-        double canvasHeight =
-            DrawingCanvas.ActualHeight;
-
-        if (canvasWidth <= 0 ||
-            canvasHeight <= 0 ||
-            _pdfPageWidth <= 0 ||
-            _pdfPageHeight <= 0)
-        {
-            return new Point();
-        }
-
-        double normalizedX =
-            pdfPoint.X / _pdfPageWidth;
-
-        // PDFの左下原点から、WPFの左上原点へ戻す。
-        double normalizedY =
-            1.0 -
-            pdfPoint.Y / _pdfPageHeight;
-
-        return new Point(
-            normalizedX * canvasWidth,
-            normalizedY * canvasHeight);
     }
 
     /// 元に戻す。
@@ -3167,15 +3174,21 @@ public partial class MainWindow : Window
                         _currentPdfPath,
                         pageIndex);
 
-                bool isRotated270 =
-                    pageSize.Width > pageSize.Height;
+                PageInfo pageInfo =
+                    _pdfService.GetPageInfo(
+                        _currentPdfPath,
+                        pageIndex);
+
+                bool requiresLegacy270InkCorrection =
+                    RequiresLegacy270InkCorrection(
+                        pageInfo);
 
                 List<StrokeModel> convertedStrokes =
                     visibleStrokes
                         .Select(stroke =>
                             ConvertStrokeForPdfSave(
                                 stroke,
-                                isRotated270,
+                                requiresLegacy270InkCorrection,
                                 pageSize.Height))
                         .ToList();
 
@@ -3202,6 +3215,20 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
+    }
+
+    /// PDFの実際の/Rotate値から、既存のInk座標270度補正が必要か判定する。
+    ///
+    /// 以前は「ページ幅 > ページ高さ」で横向きを推測していたため、
+    /// Rotate=0のA3横ページまで回転ページとして扱っていた。
+    ///
+    /// 現在のPoCで確認済みの既存補正は、PDF辞書のRotate=90ページに対して
+    /// 画面表示との整合を取るための270度方向補正として使用する。
+    /// Rotate=0ページには補正を掛けない。
+    private static bool RequiresLegacy270InkCorrection(
+        PageInfo pageInfo)
+    {
+        return pageInfo.Rotation == 90;
     }
 
     /// 保存用にストローク座標を変換する。
@@ -3323,8 +3350,14 @@ public partial class MainWindow : Window
                     _currentPdfPath,
                     pageIndex);
 
-            bool isRotated270 =
-                pageSize.Width > pageSize.Height;
+            PageInfo pageInfo =
+                _pdfService.GetPageInfo(
+                    _currentPdfPath,
+                    pageIndex);
+
+            bool requiresLegacy270InkCorrection =
+                RequiresLegacy270InkCorrection(
+                    pageInfo);
 
             List<StrokeModel> loadedStrokes =
                 _pdfService.LoadInkAnnotations(
@@ -3339,7 +3372,7 @@ public partial class MainWindow : Window
                 StrokeModel convertedStroke =
                     ConvertStrokeFromPdfLoad(
                         stroke,
-                        isRotated270,
+                        requiresLegacy270InkCorrection,
                         pageSize.Height);
 
                 convertedStrokes.Add(
@@ -3447,8 +3480,14 @@ public partial class MainWindow : Window
                 _currentPdfPath,
                 _currentPageIndex);
 
-        bool isRotated270 =
-            _pdfPageWidth > _pdfPageHeight;
+        PageInfo pageInfo =
+            _pdfService.GetPageInfo(
+                _currentPdfPath,
+                _currentPageIndex);
+
+        bool requiresLegacy270InkCorrection =
+            RequiresLegacy270InkCorrection(
+                pageInfo);
 
         _strokes.Clear();
 
@@ -3457,7 +3496,7 @@ public partial class MainWindow : Window
             StrokeModel convertedStroke =
                 ConvertStrokeFromPdfLoad(
                     stroke,
-                    isRotated270);
+                    requiresLegacy270InkCorrection);
 
             _strokes.Add(
                 convertedStroke);

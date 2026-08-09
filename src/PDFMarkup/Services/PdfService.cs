@@ -12,7 +12,7 @@ using System.Windows.Media.Imaging;
 
 using PdfSharpDocument = PdfSharp.Pdf.PdfDocument;
 
-namespace PDFMarkup;
+namespace PDFMarkup.Services;
 
 public sealed class PdfService
 {
@@ -43,6 +43,78 @@ public sealed class PdfService
         return (
             page.Width,
             page.Height);
+    }
+
+    /// 現在ページのPDFiumサイズ・MediaBox・CropBox・回転情報を取得する。
+    /// 座標ずれ調査用として、PDFiumとPDFsharpの両方からページ情報を読む。
+    public PageInfo GetPageInfo(
+        string filePath,
+        int pageIndex)
+    {
+        double pdfiumWidth;
+        double pdfiumHeight;
+
+        // 実際の画面描画に使用しているPDFium側のページサイズを取得する。
+        using (var pdfiumDocument =
+            new PdfDocument(filePath, null))
+        {
+            ValidatePageIndex(
+                pdfiumDocument,
+                pageIndex);
+
+            using var pdfiumPage =
+                pdfiumDocument.Pages[pageIndex];
+
+            pdfiumWidth =
+                pdfiumPage.Width;
+
+            pdfiumHeight =
+                pdfiumPage.Height;
+        }
+
+        // PDF辞書に保存されているBoxと/RotateはPDFsharp側から取得する。
+        using PdfSharpDocument pdfSharpDocument =
+            PdfReader.Open(
+                filePath,
+                PdfDocumentOpenMode.Import);
+
+        if (pageIndex < 0 ||
+            pageIndex >= pdfSharpDocument.PageCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pageIndex),
+                $"ページ番号が範囲外です。ページ数: {pdfSharpDocument.PageCount}");
+        }
+
+        PdfSharp.Pdf.PdfPage pdfSharpPage =
+            pdfSharpDocument.Pages[pageIndex];
+
+        PdfSharp.Pdf.PdfRectangle mediaBox =
+            pdfSharpPage.MediaBoxReadOnly;
+
+        // CropBoxが未指定の場合は、PDFsharpのEffectiveCropBoxで
+        // MediaBox等から継承・補完された実際の表示領域を取得する。
+        PdfSharp.Pdf.PdfRectangle cropBox =
+            pdfSharpPage.EffectiveCropBoxReadOnly;
+
+        return new PageInfo
+        {
+            PageIndex = pageIndex,
+            PdfiumWidth = pdfiumWidth,
+            PdfiumHeight = pdfiumHeight,
+            Rotation = pdfSharpPage.Rotate,
+
+            MediaBoxLeft = mediaBox.X1,
+            MediaBoxBottom = mediaBox.Y1,
+            MediaBoxRight = mediaBox.X2,
+            MediaBoxTop = mediaBox.Y2,
+
+            HasCropBox = pdfSharpPage.HasCropBox,
+            CropBoxLeft = cropBox.X1,
+            CropBoxBottom = cropBox.Y1,
+            CropBoxRight = cropBox.X2,
+            CropBoxTop = cropBox.Y2
+        };
     }
 
     /// 指定されたPDFページを一覧表示用のサムネイル画像として描画する。
@@ -526,6 +598,240 @@ public sealed class PdfService
                 nameof(pageIndex),
                 $"ページ番号が範囲外です。ページ数: {document.Pages.Count}");
         }
+    }
+
+    /// 現在ページのInk注釈の生データを調査用文字列として取得する。
+    /// 先頭から最大5件まで、Rect・InkList・AP有無・先頭末尾座標を表示する。
+    public string GetInkAnnotationDebugInfo(
+        string filePath,
+        int pageIndex,
+        int maximumAnnotations = 5)
+    {
+        using PdfSharpDocument document =
+            PdfReader.Open(
+                filePath,
+                PdfDocumentOpenMode.Import);
+
+        if (pageIndex < 0 ||
+            pageIndex >= document.PageCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pageIndex),
+                $"ページ番号が範囲外です。ページ数: {document.PageCount}");
+        }
+
+        var page =
+            document.Pages[pageIndex];
+
+        var annotations =
+            page.Elements.GetArray(
+                "/Annots");
+
+        if (annotations == null)
+        {
+            return
+                $"Page: {pageIndex + 1}\n" +
+                "Annotations: 0\n" +
+                "Ink annotations: 0";
+        }
+
+        int totalAnnotationCount =
+            annotations.Elements.Count;
+
+        int inkAnnotationCount = 0;
+        int outputCount = 0;
+
+        var lines =
+            new List<string>
+            {
+                $"Page: {pageIndex + 1}",
+                $"Annotations: {totalAnnotationCount}",
+                string.Empty
+            };
+
+        for (int annotationIndex = 0;
+            annotationIndex < annotations.Elements.Count;
+            annotationIndex++)
+        {
+            var item =
+                annotations.Elements[annotationIndex];
+
+            PdfSharp.Pdf.PdfDictionary? annotation =
+                item switch
+                {
+                    PdfSharp.Pdf.Advanced.PdfReference reference =>
+                        reference.Value as PdfSharp.Pdf.PdfDictionary,
+
+                    PdfSharp.Pdf.PdfDictionary dictionary =>
+                        dictionary,
+
+                    _ =>
+                        null
+                };
+
+            if (annotation == null)
+            {
+                continue;
+            }
+
+            string subtype =
+                annotation.Elements.GetName(
+                    "/Subtype");
+
+            if (subtype != "/Ink")
+            {
+                continue;
+            }
+
+            inkAnnotationCount++;
+
+            if (outputCount >=
+                Math.Max(
+                    1,
+                    maximumAnnotations))
+            {
+                continue;
+            }
+
+            outputCount++;
+
+            string rectText =
+                annotation.Elements["/Rect"]?.ToString()
+                ?? "(none)";
+
+            bool hasAppearance =
+                annotation.Elements["/AP"] != null;
+
+            string contents =
+                annotation.Elements.GetString(
+                    "/Contents");
+
+            var inkList =
+                annotation.Elements.GetArray(
+                    "/InkList");
+
+            int strokeCount =
+                inkList?.Elements.Count ?? 0;
+
+            int pointCount = 0;
+            string firstPoint = "(none)";
+            string lastPoint = "(none)";
+
+            if (inkList != null)
+            {
+                bool firstPointFound = false;
+
+                foreach (var strokeItem in inkList.Elements)
+                {
+                    if (strokeItem is not PdfSharp.Pdf.PdfArray pointArray)
+                    {
+                        continue;
+                    }
+
+                    int currentPointCount =
+                        pointArray.Elements.Count / 2;
+
+                    pointCount +=
+                        currentPointCount;
+
+                    if (!firstPointFound &&
+                        pointArray.Elements.Count >= 2)
+                    {
+                        double firstX =
+                            pointArray.Elements.GetReal(0);
+
+                        double firstY =
+                            pointArray.Elements.GetReal(1);
+
+                        firstPoint =
+                            $"({firstX:0.###}, {firstY:0.###})";
+
+                        firstPointFound = true;
+                    }
+
+                    if (pointArray.Elements.Count >= 2)
+                    {
+                        int lastXIndex =
+                            pointArray.Elements.Count - 2;
+
+                        int lastYIndex =
+                            pointArray.Elements.Count - 1;
+
+                        double lastX =
+                            pointArray.Elements.GetReal(
+                                lastXIndex);
+
+                        double lastY =
+                            pointArray.Elements.GetReal(
+                                lastYIndex);
+
+                        lastPoint =
+                            $"({lastX:0.###}, {lastY:0.###})";
+                    }
+                }
+            }
+
+            lines.Add(
+                $"[Ink #{inkAnnotationCount} / Annot index {annotationIndex}]");
+
+            lines.Add(
+                $"Rect: {rectText}");
+
+            lines.Add(
+                $"InkList strokes: {strokeCount}");
+
+            lines.Add(
+                $"Points: {pointCount}");
+
+            lines.Add(
+                $"First: {firstPoint}");
+
+            lines.Add(
+                $"Last : {lastPoint}");
+
+            lines.Add(
+                $"AP: {(hasAppearance ? "Yes" : "No")}");
+
+            if (!string.IsNullOrWhiteSpace(contents))
+            {
+                string compactContents =
+                    contents
+                        .Replace(
+                            "\r",
+                            " ")
+                        .Replace(
+                            "\n",
+                            " ");
+
+                if (compactContents.Length > 80)
+                {
+                    compactContents =
+                        compactContents[..80] +
+                        "...";
+                }
+
+                lines.Add(
+                    $"Contents: {compactContents}");
+            }
+
+            lines.Add(
+                string.Empty);
+        }
+
+        lines.Insert(
+            2,
+            $"Ink annotations: {inkAnnotationCount}");
+
+        if (inkAnnotationCount >
+            outputCount)
+        {
+            lines.Add(
+                $"※先頭 {outputCount} 件のみ表示");
+        }
+
+        return string.Join(
+            Environment.NewLine,
+            lines);
     }
 
     /// PDFからInk注釈を読み込む。
