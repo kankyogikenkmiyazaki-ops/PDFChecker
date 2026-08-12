@@ -5,6 +5,7 @@ using PdfSharp.Drawing;
 using PdfSharp.Pdf.IO;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.Json;
 using System.Windows;
@@ -249,17 +250,27 @@ public sealed class PdfService
         return image;
     }
 
-    /// ページ別のストロークをInk注釈としてPDFへ一括保存する。
-    public void SaveInkAnnotations(
+    /// ページ別の線注釈と文字注釈をPDFへ一括保存する。
+    /// 線はInk、文字はFreeTextの標準注釈として保存する。
+    public void SavePdfMarkupAnnotations(
         string sourcePath,
         string outputPath,
-        IReadOnlyDictionary<int, IReadOnlyList<StrokeModel>> pageStrokes)
+        IReadOnlyDictionary<int, IReadOnlyList<StrokeModel>> pageStrokes,
+        IReadOnlyDictionary<int, IReadOnlyList<TextAnnotationModel>> pageTextAnnotations)
     {
-        if (pageStrokes.Count == 0 ||
-            !pageStrokes.Values.Any(strokes => strokes.Count > 0))
+        bool hasStrokes =
+            pageStrokes.Values.Any(
+                strokes => strokes.Count > 0);
+
+        bool hasTextAnnotations =
+            pageTextAnnotations.Values.Any(
+                annotations => annotations.Count > 0);
+
+        if (!hasStrokes &&
+            !hasTextAnnotations)
         {
             throw new InvalidOperationException(
-                "保存するストロークがありません。");
+                "保存する注釈がありません。");
         }
 
         using PdfSharpDocument document =
@@ -268,11 +279,18 @@ public sealed class PdfService
                 PdfDocumentOpenMode.Modify);
 
         // 元PDFにすでに保存されているPDFMarkup注釈を一度取り除く。
-        // これを行わないと、非表示にした注釈が元PDF側に残ったままになる。
+        // これを行わないと、非表示にした注釈や削除した注釈が元PDF側に残る。
         RemoveExistingPdfMarkupAnnotations(document);
 
-        foreach ((int pageIndex, IReadOnlyList<StrokeModel> strokes)
-            in pageStrokes.OrderBy(entry => entry.Key))
+        IEnumerable<int> pageIndexes =
+            pageStrokes.Keys
+                .Concat(
+                    pageTextAnnotations.Keys)
+                .Distinct()
+                .OrderBy(
+                    pageIndex => pageIndex);
+
+        foreach (int pageIndex in pageIndexes)
         {
             if (pageIndex < 0 ||
                 pageIndex >= document.PageCount)
@@ -285,17 +303,41 @@ public sealed class PdfService
             PdfSharp.Pdf.PdfPage page =
                 document.Pages[pageIndex];
 
-            foreach (StrokeModel stroke in strokes)
+            if (pageStrokes.TryGetValue(
+                    pageIndex,
+                    out IReadOnlyList<StrokeModel>? strokes))
             {
-                if (stroke.PdfPoints.Count < 2)
+                foreach (StrokeModel stroke in strokes)
                 {
-                    continue;
-                }
+                    if (stroke.PdfPoints.Count < 2)
+                    {
+                        continue;
+                    }
 
-                AddInkAnnotation(
-                    document,
-                    page,
-                    stroke);
+                    AddInkAnnotation(
+                        document,
+                        page,
+                        stroke);
+                }
+            }
+
+            if (pageTextAnnotations.TryGetValue(
+                    pageIndex,
+                    out IReadOnlyList<TextAnnotationModel>? textAnnotations))
+            {
+                foreach (TextAnnotationModel annotation in textAnnotations)
+                {
+                    if (string.IsNullOrWhiteSpace(
+                            annotation.Text))
+                    {
+                        continue;
+                    }
+
+                    AddFreeTextAnnotation(
+                        document,
+                        page,
+                        annotation);
+                }
             }
         }
 
@@ -520,6 +562,146 @@ public sealed class PdfService
             annotation);
 
         var annotations =
+            page.Elements.GetArray(
+                "/Annots");
+
+        if (annotations == null)
+        {
+            annotations =
+                new PdfSharp.Pdf.PdfArray(
+                    document);
+
+            page.Elements["/Annots"] =
+                annotations;
+        }
+
+        annotations.Elements.Add(
+            annotation.Reference!);
+    }
+
+    /// 1件の文字注釈からFreeText注釈を作成する。
+    private static void AddFreeTextAnnotation(
+        PdfSharpDocument document,
+        PdfSharp.Pdf.PdfPage page,
+        TextAnnotationModel textAnnotation)
+    {
+        double fontSize =
+            Math.Max(
+                1.0,
+                textAnnotation.FontSize);
+
+        double estimatedWidth =
+            Math.Max(
+                fontSize,
+                textAnnotation.Text.Length *
+                fontSize *
+                0.65);
+
+        double estimatedHeight =
+            Math.Max(
+                fontSize,
+                fontSize * 1.4);
+
+        // TextAnnotationModel.PdfPositionは画面上の文字左上位置をPDF座標で保持する。
+        // PDFのRectは左下・右上なので、文字高さ分だけ下へ広げる。
+        double rectLeft =
+            textAnnotation.PdfPosition.X;
+
+        double rectTop =
+            textAnnotation.PdfPosition.Y;
+
+        double rectBottom =
+            rectTop - estimatedHeight;
+
+        var annotation =
+            new PdfSharp.Pdf.PdfDictionary(
+                document);
+
+        annotation.Elements.SetName(
+            "/Type",
+            "/Annot");
+
+        annotation.Elements.SetName(
+            "/Subtype",
+            "/FreeText");
+
+        annotation.Elements["/Rect"] =
+            new PdfSharp.Pdf.PdfRectangle(
+                new XRect(
+                    rectLeft,
+                    rectBottom,
+                    estimatedWidth,
+                    estimatedHeight));
+
+        annotation.Elements.SetString(
+            "/T",
+            "PDFMarkup");
+
+        // FreeTextではContentsが実際に表示される文字列になる。
+        annotation.Elements.SetString(
+            "/Contents",
+            textAnnotation.Text);
+
+        annotation.Elements.SetString(
+            "/PDFMarkupData",
+            CreateTextAnnotationMetadataJson(
+                textAnnotation));
+
+        annotation.Elements.SetReal(
+            "/CA",
+            textAnnotation.Opacity / 255.0);
+
+        annotation.Elements["/C"] =
+            CreateColorArray(
+                document,
+                textAnnotation.Color);
+
+        (byte red, byte green, byte blue) =
+            GetRgb(
+                textAnnotation.Color);
+
+        string defaultAppearance =
+            string.Format(
+                CultureInfo.InvariantCulture,
+                "/Helv {0:0.###} Tf {1:0.######} {2:0.######} {3:0.######} rg",
+                fontSize,
+                red / 255.0,
+                green / 255.0,
+                blue / 255.0);
+
+        annotation.Elements.SetString(
+            "/DA",
+            defaultAppearance);
+
+        // 左寄せ。
+        annotation.Elements.SetInteger(
+            "/Q",
+            0);
+
+        // 印刷時にも注釈を表示する。
+        annotation.Elements.SetInteger(
+            "/F",
+            4);
+
+        var borderStyle =
+            new PdfSharp.Pdf.PdfDictionary(
+                document);
+
+        borderStyle.Elements.SetName(
+            "/Type",
+            "/Border");
+
+        borderStyle.Elements.SetReal(
+            "/W",
+            0);
+
+        annotation.Elements["/BS"] =
+            borderStyle;
+
+        document.Internals.AddObject(
+            annotation);
+
+        PdfSharp.Pdf.PdfArray? annotations =
             page.Elements.GetArray(
                 "/Annots");
 
@@ -1197,6 +1379,247 @@ public sealed class PdfService
 
         // 旧版ではContentsにコメント本文だけを保存していた。
         return contents;
+    }
+
+    /// 文字注釈のPDFMarkup固有情報をJSONへ変換する。
+    private static string CreateTextAnnotationMetadataJson(
+        TextAnnotationModel annotation)
+    {
+        var metadata =
+            new TextAnnotationMetadata
+            {
+                Kind = "Text",
+                Mode = annotation.Mode.ToString(),
+                Color = annotation.Color.ToString(),
+                Opacity = annotation.Opacity,
+                Diameter = string.IsNullOrWhiteSpace(
+                    annotation.Diameter)
+                        ? "未設定"
+                        : annotation.Diameter,
+                Comment = annotation.Comment ?? string.Empty,
+                FontSize = annotation.FontSize
+            };
+
+        return JsonSerializer.Serialize(
+            metadata);
+    }
+
+    /// FreeText注釈から文字注釈を読み込む。
+    public List<TextAnnotationModel> LoadTextAnnotations(
+        string filePath,
+        int pageIndex)
+    {
+        using PdfSharpDocument document =
+            PdfReader.Open(
+                filePath,
+                PdfDocumentOpenMode.Import);
+
+        if (pageIndex < 0 ||
+            pageIndex >= document.PageCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pageIndex),
+                $"ページ番号が範囲外です。ページ数: {document.PageCount}");
+        }
+
+        PdfSharp.Pdf.PdfPage page =
+            document.Pages[pageIndex];
+
+        var result =
+            new List<TextAnnotationModel>();
+
+        PdfSharp.Pdf.PdfArray? annotations =
+            page.Elements.GetArray(
+                "/Annots");
+
+        if (annotations == null)
+        {
+            return result;
+        }
+
+        foreach (PdfSharp.Pdf.PdfItem item in annotations.Elements)
+        {
+            PdfSharp.Pdf.PdfDictionary? annotation =
+                ResolveAnnotationDictionary(
+                    item);
+
+            if (annotation == null ||
+                annotation.Elements.GetName(
+                    "/Subtype") != "/FreeText")
+            {
+                continue;
+            }
+
+            string text =
+                annotation.Elements.GetString(
+                    "/Contents");
+
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            PdfSharp.Pdf.PdfRectangle rect =
+                annotation.Elements.GetRectangle(
+                    "/Rect",
+                    false);
+
+            if (rect.IsEmpty)
+            {
+                continue;
+            }
+
+            TextAnnotationMetadata? metadata =
+                ReadTextAnnotationMetadata(
+                    annotation);
+
+            StrokeColor color =
+                ReadStrokeColor(
+                    annotation);
+
+            byte opacity =
+                ReadStrokeOpacity(
+                    annotation);
+
+            DrawingMode mode =
+                DrawingMode.Markup;
+
+            if (Enum.TryParse(
+                    metadata?.Mode,
+                    true,
+                    out DrawingMode metadataMode))
+            {
+                mode =
+                    metadataMode;
+            }
+
+            double fontSize =
+                metadata?.FontSize > 0
+                    ? metadata.FontSize
+                    : ReadFreeTextFontSize(
+                        annotation);
+
+            var textAnnotation =
+                new TextAnnotationModel
+                {
+                    Text = text,
+                    PdfPosition =
+                        new Point(
+                            rect.X1,
+                            rect.Y2),
+                    Color = color,
+                    Opacity = opacity,
+                    FontSize = fontSize,
+                    Mode = mode,
+                    Diameter =
+                        string.IsNullOrWhiteSpace(
+                            metadata?.Diameter)
+                                ? "未設定"
+                                : metadata!.Diameter,
+                    Comment =
+                        metadata?.Comment ?? string.Empty
+                };
+
+            result.Add(
+                textAnnotation);
+        }
+
+        return result;
+    }
+
+    /// 文字注釈の独自JSON情報を読み込む。
+    private static TextAnnotationMetadata? ReadTextAnnotationMetadata(
+        PdfSharp.Pdf.PdfDictionary annotation)
+    {
+        string json =
+            annotation.Elements.GetString(
+                "/PDFMarkupData");
+
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            TextAnnotationMetadata? metadata =
+                JsonSerializer.Deserialize<TextAnnotationMetadata>(
+                    json);
+
+            return string.Equals(
+                    metadata?.Kind,
+                    "Text",
+                    StringComparison.OrdinalIgnoreCase)
+                ? metadata
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// FreeTextのDefault Appearanceから文字サイズを読み込む。
+    private static double ReadFreeTextFontSize(
+        PdfSharp.Pdf.PdfDictionary annotation)
+    {
+        string defaultAppearance =
+            annotation.Elements.GetString(
+                "/DA");
+
+        if (string.IsNullOrWhiteSpace(
+                defaultAppearance))
+        {
+            return 16.0;
+        }
+
+        string[] parts =
+            defaultAppearance.Split(
+                ' ',
+                StringSplitOptions.RemoveEmptyEntries);
+
+        for (int index = 1;
+            index < parts.Length;
+            index++)
+        {
+            if (!string.Equals(
+                    parts[index],
+                    "Tf",
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (double.TryParse(
+                    parts[index - 1],
+                    NumberStyles.Float,
+                    CultureInfo.InvariantCulture,
+                    out double fontSize) &&
+                fontSize > 0)
+            {
+                return fontSize;
+            }
+        }
+
+        return 16.0;
+    }
+
+    /// FreeText注釈用のPDFMarkup固有JSON構造。
+    private sealed class TextAnnotationMetadata
+    {
+        public string Kind { get; set; } = "Text";
+
+        public string Mode { get; set; } = DrawingMode.Markup.ToString();
+
+        public string Color { get; set; } = StrokeColor.Red.ToString();
+
+        public byte Opacity { get; set; } = 255;
+
+        public string Diameter { get; set; } = "未設定";
+
+        public string Comment { get; set; } = string.Empty;
+
+        public double FontSize { get; set; } = 16.0;
     }
 
     /// PDFMarkup固有情報のJSON構造。

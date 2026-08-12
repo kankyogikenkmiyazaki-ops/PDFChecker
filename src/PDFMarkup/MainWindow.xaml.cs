@@ -38,12 +38,14 @@ public partial class MainWindow : Window
     private enum UndoActionType
     {
         AddStroke,
+        AddText,
         DeleteStroke,
         EditDiameter,
         EditComment,
         EditColor,
         EditThickness,
-        EditOpacity
+        EditOpacity,
+        EditFontSize
     }
 
     /// 1回分の操作履歴を保持する。
@@ -51,9 +53,15 @@ public partial class MainWindow : Window
     {
         public UndoActionType Type { get; init; }
 
-        public StrokeModel Stroke { get; init; } = null!;
+        public StrokeModel? Stroke { get; init; }
+
+        public TextAnnotationModel? TextAnnotation { get; init; }
 
         public int StrokeIndex { get; init; }
+
+        public int TextAnnotationIndex { get; init; }
+
+        public int PageIndex { get; init; }
 
         public string OldValue { get; init; } = string.Empty;
 
@@ -106,6 +114,7 @@ public partial class MainWindow : Window
     // サービス
     private readonly PdfService _pdfService = new();
     private readonly DrawingService _drawingService = new();
+    private readonly TextService _textService = new();
 
     // 現在ページの描画データ
     private readonly List<StrokeModel> _strokes = new();
@@ -132,13 +141,6 @@ public partial class MainWindow : Window
     private StrokeModel? _currentStrokeModel;
     private Polyline? _currentStrokeView;
 
-    // Textツールでクリック位置に一時表示する文字入力欄。
-    // STEP2では入力位置の確認までとし、注釈モデルへの確定は次STEPで行う。
-    private TextBox? _activeTextInput;
-
-    // 文字入力を開始したCanvas上の位置。
-    private Point _textInputCanvasPoint;
-
     // 直線・矢印描画時のプレビューに使用するシャドウ線。
     private Line? _shadowLine;
 
@@ -156,7 +158,7 @@ public partial class MainWindow : Window
     // 現在、Shiftによる直線プレビュー中かを表す。
     private bool _isStraightPreviewActive;
 
-    // 現在選択されている注釈。
+    // 現在選択されている線注釈。
     private StrokeModel? _selectedStroke;
 
     // 注釈選択時など、右パネルをコードから更新している間は
@@ -171,7 +173,7 @@ public partial class MainWindow : Window
     // 口径強調表示の再描画を行わない。
     private bool _isUpdatingDiameterSelection;
 
-    // コメント編集を1回のUndoとしてまとめるため、編集開始時の値を保持する。
+    // コメント編集を1回のUndoとしてまとめるため、編集開始時の対象と値を保持する。
     private StrokeModel? _commentEditingStroke;
     private string _commentEditOriginalValue = string.Empty;
 
@@ -196,6 +198,9 @@ public partial class MainWindow : Window
     private StrokeColor _currentStrokeColor = StrokeColor.Red;
     private double _currentStrokeThickness = 1.0;
     private byte _currentStrokeOpacity = 255;
+
+    // 新規文字入力に使用するPDF基準の文字サイズ（pt）。
+    private double _currentTextFontSize = 16.0;
 
     // モードごとの最後の設定
     private StrokeColor _lastMarkupColor = StrokeColor.Red;
@@ -255,6 +260,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        _textService.AnnotationCommitted +=
+            TextService_AnnotationCommitted;
 
         PageListBox.ItemsSource =
             _pageThumbnails;
@@ -395,6 +403,9 @@ public partial class MainWindow : Window
         }
 
         DrawingCanvas.Children.Clear();
+        _textService.ClearAll(
+            DrawingCanvas);
+
         _strokes.Clear();
         _undoActions.Clear();
         _redoActions.Clear();
@@ -411,6 +422,7 @@ public partial class MainWindow : Window
         _currentStrokeView = null;
         _zoomFactor = 1.0;
         ClearStrokeSelection();
+        _textService.ClearSelection();
 
         DisplayCurrentPage();
         StartThumbnailGeneration();
@@ -502,6 +514,7 @@ public partial class MainWindow : Window
         // 移動前ページの未保存描画をメモリへ退避する。
         SaveCurrentPageState();
         ClearStrokeSelection();
+        _textService.ClearSelection();
 
         _currentPageIndex =
             pageIndex;
@@ -730,6 +743,133 @@ public partial class MainWindow : Window
             }));
     }
 
+    /// 指定したビューポート上の位置を基準にズームする。
+    /// ホイールを回した瞬間にマウスポインタ下にあるPDF上の点を記録し、
+    /// 拡大縮小後もその点ができるだけ同じポインタ位置へ残るよう補正する。
+    private void SetZoomFactorAtViewportPoint(
+        double zoomFactor,
+        Point viewportPoint)
+    {
+        double newZoomFactor =
+            Math.Clamp(
+                zoomFactor,
+                MinimumZoomFactor,
+                MaximumZoomFactor);
+
+        if (Math.Abs(
+                newZoomFactor - _zoomFactor) < 0.0001)
+        {
+            return;
+        }
+
+        double oldHostWidth =
+            PdfPageHost.ActualWidth;
+
+        double oldHostHeight =
+            PdfPageHost.ActualHeight;
+
+        if (oldHostWidth <= 0 ||
+            oldHostHeight <= 0)
+        {
+            SetZoomFactor(
+                newZoomFactor);
+
+            return;
+        }
+
+        // ホイールを回した瞬間に、
+        // カーソルがPDFページ上のどの位置を指しているか取得する。
+        Point hostPoint =
+            Mouse.GetPosition(
+                PdfPageHost);
+
+        double anchorXRatio =
+            Math.Clamp(
+                hostPoint.X / oldHostWidth,
+                0.0,
+                1.0);
+
+        double anchorYRatio =
+            Math.Clamp(
+                hostPoint.Y / oldHostHeight,
+                0.0,
+                1.0);
+
+        _zoomFactor =
+            newZoomFactor;
+
+        ApplyZoomSize();
+
+        // ズームによるレイアウト変更が確定した後、
+        // 同じPDF上の点がカーソルからどれだけずれたかを実測して補正する。
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Render,
+            new Action(() =>
+            {
+                double newHostWidth =
+                    PdfPageHost.ActualWidth;
+
+                double newHostHeight =
+                    PdfPageHost.ActualHeight;
+
+                if (newHostWidth <= 0 ||
+                    newHostHeight <= 0)
+                {
+                    return;
+                }
+
+                Point newAnchorOnHost =
+                    new Point(
+                        anchorXRatio * newHostWidth,
+                        anchorYRatio * newHostHeight);
+
+                Point newAnchorInViewport =
+                    PdfPageHost.TranslatePoint(
+                        newAnchorOnHost,
+                        PdfViewport);
+
+                double deltaX =
+                    newAnchorInViewport.X -
+                    viewportPoint.X;
+
+                double deltaY =
+                    newAnchorInViewport.Y -
+                    viewportPoint.Y;
+
+                double targetHorizontalOffset =
+                    PdfViewport.HorizontalOffset +
+                    deltaX;
+
+                double targetVerticalOffset =
+                    PdfViewport.VerticalOffset +
+                    deltaY;
+
+                double maxHorizontalOffset =
+                    Math.Max(
+                        0.0,
+                        PdfViewport.ExtentWidth -
+                        PdfViewport.ViewportWidth);
+
+                double maxVerticalOffset =
+                    Math.Max(
+                        0.0,
+                        PdfViewport.ExtentHeight -
+                        PdfViewport.ViewportHeight);
+
+                PdfViewport.ScrollToHorizontalOffset(
+                    Math.Clamp(
+                        targetHorizontalOffset,
+                        0.0,
+                        maxHorizontalOffset));
+
+                PdfViewport.ScrollToVerticalOffset(
+                    Math.Clamp(
+                        targetVerticalOffset,
+                        0.0,
+                        maxVerticalOffset));
+            }));
+    }
+
     /// 拡大ボタンでPDFを一段階拡大する。
     private void ZoomInButton_Click(
         object sender,
@@ -877,6 +1017,7 @@ public partial class MainWindow : Window
     }
 
     /// マウスホイールをPDFのズーム操作として処理する。
+    /// マウスポインタ下のPDF位置を基準に拡大縮小する。
     private void PdfViewport_PreviewMouseWheel(
         object sender,
         MouseWheelEventArgs e)
@@ -886,8 +1027,13 @@ public partial class MainWindow : Window
                 ? ZoomStep
                 : 1.0 / ZoomStep;
 
-        SetZoomFactor(
-            _zoomFactor * zoomMultiplier);
+        Point viewportPoint =
+            e.GetPosition(
+                PdfViewport);
+
+        SetZoomFactorAtViewportPoint(
+            _zoomFactor * zoomMultiplier,
+            viewportPoint);
 
         e.Handled = true;
     }
@@ -917,7 +1063,32 @@ public partial class MainWindow : Window
         // その場で文字入力できる状態にする。
         if (_currentToolMode == ToolMode.Text)
         {
-            BeginTextInput(canvasPoint);
+            _textService.ClearSelection();
+
+            Point textPdfPoint =
+                _drawingService.ConvertCanvasPointToPdfPoint(
+                    canvasPoint,
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight,
+                    _pdfPageWidth,
+                    _pdfPageHeight);
+
+            _textService.BeginTextInput(
+                DrawingCanvas,
+                _currentPageIndex,
+                canvasPoint,
+                textPdfPoint,
+                _currentStrokeColor,
+                _currentStrokeOpacity,
+                _currentDrawingMode,
+                GetSelectedDiameter(),
+                AnnotationCommentTextBox.Text.Trim(),
+                CreateStrokeBrush(
+                    _currentStrokeColor,
+                    _currentStrokeOpacity),
+                GetCurrentCanvasScale(),
+                _currentTextFontSize);
+
             e.Handled = true;
             return;
         }
@@ -928,17 +1099,48 @@ public partial class MainWindow : Window
         {
             CommitCommentEditUndo();
 
-            StrokeModel? hitStroke =
-                FindStrokeAtCanvasPoint(canvasPoint);
+            Point hitPdfPoint =
+                _drawingService.ConvertCanvasPointToPdfPoint(
+                    canvasPoint,
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight,
+                    _pdfPageWidth,
+                    _pdfPageHeight);
 
-            if (hitStroke != null)
+            TextAnnotationModel? hitText =
+                _textService.SelectAnnotationAtPdfPoint(
+                    _currentPageIndex,
+                    hitPdfPoint);
+
+            if (hitText != null)
             {
-                SelectStroke(hitStroke);
+                ClearStrokeSelection();
+
+                ApplySelectedTextToRightPanel(
+                    hitText);
+
+                RedrawStrokes();
             }
             else
             {
-                ClearStrokeSelection();
-                RedrawStrokes();
+                StrokeModel? hitStroke =
+                    FindStrokeAtCanvasPoint(
+                        canvasPoint);
+
+                if (hitStroke != null)
+                {
+                    _textService.ClearSelection();
+
+                    SelectStroke(
+                        hitStroke);
+                }
+                else
+                {
+                    ClearStrokeSelection();
+                    _textService.ClearSelection();
+    
+                    RedrawStrokes();
+                }
             }
 
             e.Handled = true;
@@ -1023,62 +1225,6 @@ public partial class MainWindow : Window
 
         // Canvas外へマウスが移動しても描画終了を取得できるようにする。
         DrawingCanvas.CaptureMouse();
-    }
-
-    /// Textツールで指定位置へ一時文字入力欄を表示する。
-    private void BeginTextInput(
-        Point canvasPoint)
-    {
-        CancelTextInput();
-
-        _textInputCanvasPoint =
-            canvasPoint;
-
-        _activeTextInput =
-            new TextBox
-            {
-                MinWidth = 90,
-                MinHeight = 26,
-                Padding = new Thickness(4, 2, 4, 2),
-                FontSize = 16,
-                Foreground =
-                    CreateStrokeBrush(
-                        _currentStrokeColor,
-                        _currentStrokeOpacity),
-                Background = Brushes.White,
-                BorderBrush = Brushes.DodgerBlue,
-                BorderThickness = new Thickness(1),
-                VerticalContentAlignment = VerticalAlignment.Center,
-                AcceptsReturn = false
-            };
-
-        Canvas.SetLeft(
-            _activeTextInput,
-            canvasPoint.X);
-
-        Canvas.SetTop(
-            _activeTextInput,
-            canvasPoint.Y);
-
-        DrawingCanvas.Children.Add(
-            _activeTextInput);
-
-        _activeTextInput.Focus();
-        Keyboard.Focus(_activeTextInput);
-    }
-
-    /// 現在表示中の一時文字入力欄を破棄する。
-    private void CancelTextInput()
-    {
-        if (_activeTextInput == null)
-        {
-            return;
-        }
-
-        DrawingCanvas.Children.Remove(
-            _activeTextInput);
-
-        _activeTextInput = null;
     }
 
     /// Shiftキーが現在押されているか確認する。
@@ -1700,6 +1846,31 @@ public partial class MainWindow : Window
         RedrawStrokes();
     }
 
+    /// 現在のPDFページサイズに対するCanvas表示倍率を取得する。
+    /// PDF基準の文字サイズなどをCanvas表示サイズへ変換する際に使用する。
+    private double GetCurrentCanvasScale()
+    {
+        if (_pdfPageWidth <= 0 ||
+            _pdfPageHeight <= 0 ||
+            DrawingCanvas.ActualWidth <= 0 ||
+            DrawingCanvas.ActualHeight <= 0)
+        {
+            return 1.0;
+        }
+
+        double scaleX =
+            DrawingCanvas.ActualWidth /
+            _pdfPageWidth;
+
+        double scaleY =
+            DrawingCanvas.ActualHeight /
+            _pdfPageHeight;
+
+        return Math.Max(
+            0.0001,
+            (scaleX + scaleY) / 2.0);
+    }
+
     /// 指定位置にある注釈を後から描いた順に検索する。
     private StrokeModel? FindStrokeAtCanvasPoint(
         Point canvasPoint)
@@ -1939,12 +2110,14 @@ public partial class MainWindow : Window
                 _currentToolMode == ToolMode.Eraser ||
                 _currentToolMode == ToolMode.Hand)
             {
-                CancelTextInput();
+                _textService.CancelTextInput(
+                    DrawingCanvas);
 
                 SetToolMode(
                     ToolMode.Drawing);
 
                 ClearStrokeSelection();
+                _textService.ClearSelection();
                 RedrawStrokes();
                 e.Handled = true;
                 return;
@@ -1954,6 +2127,7 @@ public partial class MainWindow : Window
             CommitCommentEditUndo();
 
             ClearStrokeSelection();
+            _textService.ClearSelection();
             RedrawStrokes();
             e.Handled = true;
             return;
@@ -1968,7 +2142,8 @@ public partial class MainWindow : Window
         // 線を選び直した後もキーボードフォーカスだけがTextBoxへ残る場合があるため、
         // FocusedElementだけでは判定しない。
         if (Keyboard.FocusedElement is TextBox &&
-            _commentEditingStroke != null)
+            (_commentEditingStroke != null ||
+             _textService.IsCommentEditing))
         {
             return;
         }
@@ -1984,6 +2159,7 @@ public partial class MainWindow : Window
     {
         CommitCommentEditUndo();
         ClearStrokeSelection();
+        _textService.ClearSelection();
 
         SetToolMode(
             _currentToolMode == ToolMode.Eraser
@@ -2133,7 +2309,9 @@ public partial class MainWindow : Window
     {
         CommitCommentEditUndo();
         ClearStrokeSelection();
-        CancelTextInput();
+        _textService.ClearSelection();
+        _textService.CancelTextInput(
+            DrawingCanvas);
 
         SetToolMode(
             _currentToolMode == ToolMode.Text
@@ -2151,6 +2329,7 @@ public partial class MainWindow : Window
     {
         CommitCommentEditUndo();
         ClearStrokeSelection();
+        _textService.ClearSelection();
 
         SetToolMode(
             _currentToolMode == ToolMode.Select
@@ -2167,6 +2346,7 @@ public partial class MainWindow : Window
     {
         CommitCommentEditUndo();
         ClearStrokeSelection();
+        _textService.ClearSelection();
 
         SetToolMode(
             _currentToolMode == ToolMode.Hand
@@ -2332,6 +2512,8 @@ public partial class MainWindow : Window
     private void SelectStroke(
         StrokeModel stroke)
     {
+        _textService.ClearSelection();
+
         if (!ReferenceEquals(
                 _selectedStroke,
                 stroke))
@@ -2342,6 +2524,51 @@ public partial class MainWindow : Window
         _selectedStroke = stroke;
         ApplySelectedStrokeToRightPanel(stroke);
         RedrawStrokes();
+    }
+
+    /// 選択した文字注釈の共通情報を描画設定と右パネルへ反映する。
+    /// 文字列・文字サイズの専用UIは次STEPで追加する。
+    private void ApplySelectedTextToRightPanel(
+        TextAnnotationModel annotation)
+    {
+        _currentDrawingMode =
+            annotation.Mode;
+
+        _currentStrokeColor =
+            annotation.Color;
+
+        _currentStrokeOpacity =
+            annotation.Opacity;
+
+        if (CurrentDrawingModeText != null)
+        {
+            CurrentDrawingModeText.Text =
+                annotation.Mode == DrawingMode.Markup
+                    ? "朱書き"
+                    : "チェック";
+        }
+
+        _isUpdatingAnnotationPanel = true;
+
+        try
+        {
+            SelectDiameterInRightPanel(
+                annotation.Diameter);
+
+            if (AnnotationCommentTextBox != null)
+            {
+                AnnotationCommentTextBox.Text =
+                    annotation.Comment;
+            }
+        }
+        finally
+        {
+            _isUpdatingAnnotationPanel = false;
+        }
+
+        UpdateDrawingModeButtonVisuals();
+        UpdateDrawingSettingsUi();
+
     }
 
     /// 選択した注釈情報を描画モードと右パネルへ反映する。
@@ -2373,7 +2600,8 @@ public partial class MainWindow : Window
 
             if (AnnotationCommentTextBox != null)
             {
-                AnnotationCommentTextBox.Text = stroke.Comment;
+                AnnotationCommentTextBox.Text =
+                    stroke.Comment;
             }
         }
         finally
@@ -2427,36 +2655,58 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!_isUpdatingAnnotationPanel &&
-            _selectedStroke != null &&
-            _strokes.Contains(_selectedStroke))
+        if (!_isUpdatingAnnotationPanel)
         {
-            string oldDiameter =
-                _selectedStroke.Diameter;
-
             string newDiameter =
                 GetSelectedDiameter();
 
-            if (!string.Equals(
-                    oldDiameter,
+            if (_textService.TryChangeSelectedDiameter(
                     newDiameter,
-                    StringComparison.Ordinal))
+                    out string oldTextDiameter))
             {
-                _selectedStroke.Diameter =
-                    newDiameter;
+                TextAnnotationModel? selectedText =
+                    _textService.SelectedAnnotation;
 
-                PushUndoAction(
-                    new UndoAction
-                    {
-                        Type = UndoActionType.EditDiameter,
-                        Stroke = _selectedStroke,
-                        OldValue = oldDiameter,
-                        NewValue = newDiameter
-                    });
+                if (selectedText != null)
+                {
+                    PushUndoAction(
+                        new UndoAction
+                        {
+                            Type = UndoActionType.EditDiameter,
+                            TextAnnotation = selectedText,
+                            PageIndex = _currentPageIndex,
+                            OldValue = oldTextDiameter,
+                            NewValue = newDiameter
+                        });
+                }
+            }
+            else if (_selectedStroke != null &&
+                     _strokes.Contains(_selectedStroke))
+            {
+                string oldDiameter =
+                    _selectedStroke.Diameter;
+
+                if (!string.Equals(
+                        oldDiameter,
+                        newDiameter,
+                        StringComparison.Ordinal))
+                {
+                    _selectedStroke.Diameter =
+                        newDiameter;
+
+                    PushUndoAction(
+                        new UndoAction
+                        {
+                            Type = UndoActionType.EditDiameter,
+                            Stroke = _selectedStroke,
+                            OldValue = oldDiameter,
+                            NewValue = newDiameter
+                        });
+                }
             }
         }
 
-        // 元のストローク色は変更せず、画面上の表示色だけを更新する。
+        // 元データの色は変更せず、画面上の表示だけを更新する。
         RedrawStrokes();
     }
 
@@ -2480,8 +2730,21 @@ public partial class MainWindow : Window
         object sender,
         KeyboardFocusChangedEventArgs e)
     {
-        if (_isUpdatingAnnotationPanel ||
-            _selectedStroke == null ||
+        if (_isUpdatingAnnotationPanel)
+        {
+            _commentEditingStroke = null;
+            _commentEditOriginalValue = string.Empty;
+            return;
+        }
+
+        if (_textService.BeginSelectedCommentEdit())
+        {
+            _commentEditingStroke = null;
+            _commentEditOriginalValue = string.Empty;
+            return;
+        }
+
+        if (_selectedStroke == null ||
             !_strokes.Contains(_selectedStroke))
         {
             _commentEditingStroke = null;
@@ -2565,6 +2828,31 @@ public partial class MainWindow : Window
     /// コメント変更を1回分のUndo履歴として確定する。
     private void CommitCommentEditUndo()
     {
+        string newValue =
+            AnnotationCommentTextBox.Text.Trim();
+
+        if (_textService.TryCommitCommentEdit(
+                newValue,
+                out TextAnnotationModel? textAnnotation,
+                out string oldTextValue))
+        {
+            if (textAnnotation != null)
+            {
+                PushUndoAction(
+                    new UndoAction
+                    {
+                        Type = UndoActionType.EditComment,
+                        TextAnnotation = textAnnotation,
+                        PageIndex = _currentPageIndex,
+                        OldValue = oldTextValue,
+                        NewValue = newValue
+                    });
+            }
+
+            RedrawStrokes();
+            return;
+        }
+
         StrokeModel? stroke =
             _commentEditingStroke;
 
@@ -2577,10 +2865,6 @@ public partial class MainWindow : Window
             return;
         }
 
-        string newValue =
-            AnnotationCommentTextBox.Text.Trim();
-
-        // 編集開始時に固定した注釈だけへ反映する。
         stroke.Comment =
             newValue;
 
@@ -2600,6 +2884,151 @@ public partial class MainWindow : Window
         }
 
         _commentEditOriginalValue = string.Empty;
+
+        RedrawStrokes();
+    }
+
+    /// Aボタン横の文字サイズ欄を指定値へ同期する。
+    private void SetTextFontSizeComboBoxValue(
+        double fontSize)
+    {
+        if (TextFontSizeComboBox == null)
+        {
+            return;
+        }
+
+        _isUpdatingAnnotationPanel = true;
+
+        try
+        {
+            TextFontSizeComboBox.Text =
+                fontSize.ToString(
+                    "0.##",
+                    CultureInfo.InvariantCulture);
+        }
+        finally
+        {
+            _isUpdatingAnnotationPanel = false;
+        }
+    }
+
+    /// 文字サイズ候補の選択変更を反映する。
+    private void TextFontSizeComboBox_SelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (_isUpdatingAnnotationPanel)
+        {
+            return;
+        }
+
+        ApplyTextFontSizeFromComboBox();
+    }
+
+    /// 文字サイズ欄からフォーカスが外れたとき値を確定する。
+    private void TextFontSizeComboBox_LostKeyboardFocus(
+        object sender,
+        KeyboardFocusChangedEventArgs e)
+    {
+        ApplyTextFontSizeFromComboBox();
+    }
+
+    /// 文字サイズ欄でEnterを押したとき値を確定する。
+    private void TextFontSizeComboBox_PreviewKeyDown(
+        object sender,
+        KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+        {
+            return;
+        }
+
+        ApplyTextFontSizeFromComboBox();
+        Keyboard.ClearFocus();
+        e.Handled = true;
+    }
+
+    /// Aボタン横の値を新規文字設定または選択中文字へ反映する。
+    private void ApplyTextFontSizeFromComboBox()
+    {
+        if (TextFontSizeComboBox == null)
+        {
+            return;
+        }
+
+        string valueText =
+            TextFontSizeComboBox.Text.Trim();
+
+        if (!double.TryParse(
+                valueText,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out double newValue))
+        {
+            SetTextFontSizeComboBoxValue(
+                _textService.SelectedAnnotation?.FontSize
+                ?? _currentTextFontSize);
+
+            return;
+        }
+
+        newValue =
+            Math.Clamp(
+                newValue,
+                4.0,
+                200.0);
+
+        TextAnnotationModel? selectedText =
+            _textService.SelectedAnnotation;
+
+        if (selectedText == null)
+        {
+            _currentTextFontSize =
+                newValue;
+
+            SetTextFontSizeComboBoxValue(
+                newValue);
+
+            return;
+        }
+
+        if (Math.Abs(
+                selectedText.FontSize - newValue) < 0.0001)
+        {
+            _currentTextFontSize =
+                newValue;
+
+            SetTextFontSizeComboBoxValue(
+                newValue);
+
+            return;
+        }
+
+        if (_textService.BeginSelectedFontSizeEdit() &&
+            _textService.TryCommitFontSizeEdit(
+                newValue,
+                out TextAnnotationModel? annotation,
+                out double oldValue) &&
+            annotation != null)
+        {
+            PushUndoAction(
+                new UndoAction
+                {
+                    Type = UndoActionType.EditFontSize,
+                    TextAnnotation = annotation,
+                    PageIndex = _currentPageIndex,
+                    OldValue = oldValue.ToString(
+                        CultureInfo.InvariantCulture),
+                    NewValue = newValue.ToString(
+                        CultureInfo.InvariantCulture)
+                });
+        }
+
+        _currentTextFontSize =
+            newValue;
+
+        SetTextFontSizeComboBoxValue(
+            newValue);
 
         RedrawStrokes();
     }
@@ -2894,6 +3323,34 @@ public partial class MainWindow : Window
         {
             DrawSelectionAdorner(_selectedStroke);
         }
+
+        _textService.RedrawAnnotations(
+            DrawingCanvas,
+            _currentPageIndex,
+            pdfPoint =>
+                _drawingService.ConvertPdfPointToCanvasPoint(
+                    pdfPoint,
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight,
+                    _pdfPageWidth,
+                    _pdfPageHeight),
+            GetCurrentCanvasScale());
+    }
+
+    /// TextServiceで確定した文字注釈をUndo履歴へ登録する。
+    private void TextService_AnnotationCommitted(
+        int pageIndex,
+        TextAnnotationModel annotation,
+        int annotationIndex)
+    {
+        PushUndoAction(
+            new UndoAction
+            {
+                Type = UndoActionType.AddText,
+                TextAnnotation = annotation,
+                TextAnnotationIndex = annotationIndex,
+                PageIndex = pageIndex
+            });
     }
 
     /// 元に戻す。
@@ -2938,7 +3395,7 @@ public partial class MainWindow : Window
             isUndo: true);
 
         _redoActions.Push(action);
-        RefreshAfterUndoRedo(action.Stroke);
+        RefreshAfterUndoRedo(action);
     }
 
     /// 元に戻した操作をやり直す。
@@ -2957,7 +3414,7 @@ public partial class MainWindow : Window
             isUndo: false);
 
         _undoActions.Push(action);
-        RefreshAfterUndoRedo(action.Stroke);
+        RefreshAfterUndoRedo(action);
     }
 
     /// 操作内容をUndoまたはRedoとして反映する。
@@ -2967,7 +3424,35 @@ public partial class MainWindow : Window
     {
         switch (action.Type)
         {
+            case UndoActionType.AddText:
+                if (action.TextAnnotation == null)
+                {
+                    break;
+                }
+
+                if (isUndo)
+                {
+                    _textService.RemoveAnnotation(
+                        action.PageIndex,
+                        action.TextAnnotation);
+
+                }
+                else
+                {
+                    _textService.InsertAnnotation(
+                        action.PageIndex,
+                        action.TextAnnotationIndex,
+                        action.TextAnnotation);
+                }
+
+                break;
+
             case UndoActionType.AddStroke:
+                if (action.Stroke == null)
+                {
+                    break;
+                }
+
                 if (isUndo)
                 {
                     _strokes.Remove(action.Stroke);
@@ -2995,6 +3480,11 @@ public partial class MainWindow : Window
                 break;
 
             case UndoActionType.DeleteStroke:
+                if (action.Stroke == null)
+                {
+                    break;
+                }
+
                 if (isUndo)
                 {
                     if (!_strokes.Contains(action.Stroke))
@@ -3025,6 +3515,21 @@ public partial class MainWindow : Window
                 break;
 
             case UndoActionType.EditDiameter:
+                if (action.TextAnnotation != null)
+                {
+                    action.TextAnnotation.Diameter =
+                        isUndo
+                            ? action.OldValue
+                            : action.NewValue;
+
+                    break;
+                }
+
+                if (action.Stroke == null)
+                {
+                    break;
+                }
+
                 action.Stroke.Diameter =
                     isUndo
                         ? action.OldValue
@@ -3032,6 +3537,21 @@ public partial class MainWindow : Window
                 break;
 
             case UndoActionType.EditComment:
+                if (action.TextAnnotation != null)
+                {
+                    action.TextAnnotation.Comment =
+                        isUndo
+                            ? action.OldValue
+                            : action.NewValue;
+
+                    break;
+                }
+
+                if (action.Stroke == null)
+                {
+                    break;
+                }
+
                 action.Stroke.Comment =
                     isUndo
                         ? action.OldValue
@@ -3046,12 +3566,26 @@ public partial class MainWindow : Window
                         true,
                         out StrokeColor color))
                 {
-                    action.Stroke.Color = color;
+                    if (action.TextAnnotation != null)
+                    {
+                        action.TextAnnotation.Color =
+                            color;
+                    }
+                    else if (action.Stroke != null)
+                    {
+                        action.Stroke.Color =
+                            color;
+                    }
                 }
 
                 break;
 
             case UndoActionType.EditThickness:
+                if (action.Stroke == null)
+                {
+                    break;
+                }
+
                 if (double.TryParse(
                         isUndo
                             ? action.OldValue
@@ -3075,21 +3609,65 @@ public partial class MainWindow : Window
                         CultureInfo.InvariantCulture,
                         out byte opacity))
                 {
-                    action.Stroke.Opacity = opacity;
+                    if (action.TextAnnotation != null)
+                    {
+                        action.TextAnnotation.Opacity =
+                            opacity;
+                    }
+                    else if (action.Stroke != null)
+                    {
+                        action.Stroke.Opacity =
+                            opacity;
+                    }
+                }
+
+                break;
+
+            case UndoActionType.EditFontSize:
+                if (action.TextAnnotation != null &&
+                    double.TryParse(
+                        isUndo
+                            ? action.OldValue
+                            : action.NewValue,
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out double fontSize))
+                {
+                    action.TextAnnotation.FontSize =
+                        fontSize;
                 }
 
                 break;
         }
     }
 
-    /// Undo / Redo後に選択表示と右パネルを更新する。
+    /// Undo / Redo後に選択表示・右パネル・文字表示を更新する。
     private void RefreshAfterUndoRedo(
-        StrokeModel stroke)
+        UndoAction action)
     {
-        if (_strokes.Contains(stroke))
+        if (action.TextAnnotation != null &&
+            action.PageIndex == _currentPageIndex)
         {
-            _selectedStroke = stroke;
-            ApplySelectedStrokeToRightPanel(stroke);
+            _selectedStroke =
+                null;
+
+            _textService.SelectAnnotation(
+                action.PageIndex,
+                action.TextAnnotation);
+
+            ApplySelectedTextToRightPanel(
+                action.TextAnnotation);
+        }
+        else if (action.Stroke != null &&
+                 _strokes.Contains(action.Stroke))
+        {
+            _textService.ClearSelection();
+
+            _selectedStroke =
+                action.Stroke;
+
+            ApplySelectedStrokeToRightPanel(
+                action.Stroke);
         }
 
         RedrawStrokes();
@@ -3121,11 +3699,22 @@ public partial class MainWindow : Window
             _pageStrokes.Values.Any(
                 strokes => strokes.Any(IsStrokeVisible));
 
-        if (!hasAnyStrokes)
+        bool hasAnyTextAnnotations =
+            Enumerable.Range(
+                    0,
+                    _pageCount)
+                .Any(pageIndex =>
+                    _textService
+                        .GetPageAnnotations(
+                            pageIndex)
+                        .Any(IsTextAnnotationVisible));
+
+        if (!hasAnyStrokes &&
+            !hasAnyTextAnnotations)
         {
             MessageBox.Show(
-                "保存する描画がありません。",
-                "描画なし",
+                "保存する注釈がありません。",
+                "注釈なし",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
 
@@ -3156,15 +3745,33 @@ public partial class MainWindow : Window
             var savePageStrokes =
                 new Dictionary<int, IReadOnlyList<StrokeModel>>();
 
-            foreach ((int pageIndex, List<StrokeModel> strokes)
-                in _pageStrokes.OrderBy(entry => entry.Key))
+            var savePageTextAnnotations =
+                new Dictionary<int, IReadOnlyList<TextAnnotationModel>>();
+
+            for (int pageIndex = 0;
+                pageIndex < _pageCount;
+                pageIndex++)
             {
                 List<StrokeModel> visibleStrokes =
-                    strokes
-                        .Where(IsStrokeVisible)
+                    _pageStrokes.TryGetValue(
+                        pageIndex,
+                        out List<StrokeModel>? pageStrokes)
+                        ? pageStrokes
+                            .Where(
+                                IsStrokeVisible)
+                            .ToList()
+                        : new List<StrokeModel>();
+
+                List<TextAnnotationModel> visibleTextAnnotations =
+                    _textService
+                        .GetPageAnnotations(
+                            pageIndex)
+                        .Where(
+                            IsTextAnnotationVisible)
                         .ToList();
 
-                if (visibleStrokes.Count == 0)
+                if (visibleStrokes.Count == 0 &&
+                    visibleTextAnnotations.Count == 0)
                 {
                     continue;
                 }
@@ -3183,23 +3790,42 @@ public partial class MainWindow : Window
                     RequiresLegacy270InkCorrection(
                         pageInfo);
 
-                List<StrokeModel> convertedStrokes =
-                    visibleStrokes
-                        .Select(stroke =>
-                            ConvertStrokeForPdfSave(
-                                stroke,
-                                requiresLegacy270InkCorrection,
-                                pageSize.Height))
-                        .ToList();
+                if (visibleStrokes.Count > 0)
+                {
+                    List<StrokeModel> convertedStrokes =
+                        visibleStrokes
+                            .Select(stroke =>
+                                ConvertStrokeForPdfSave(
+                                    stroke,
+                                    requiresLegacy270InkCorrection,
+                                    pageSize.Height))
+                            .ToList();
 
-                savePageStrokes[pageIndex] =
-                    convertedStrokes;
+                    savePageStrokes[pageIndex] =
+                        convertedStrokes;
+                }
+
+                if (visibleTextAnnotations.Count > 0)
+                {
+                    List<TextAnnotationModel> convertedTextAnnotations =
+                        visibleTextAnnotations
+                            .Select(annotation =>
+                                ConvertTextAnnotationForPdfSave(
+                                    annotation,
+                                    requiresLegacy270InkCorrection,
+                                    pageSize.Height))
+                            .ToList();
+
+                    savePageTextAnnotations[pageIndex] =
+                        convertedTextAnnotations;
+                }
             }
 
-            _pdfService.SaveInkAnnotations(
+            _pdfService.SavePdfMarkupAnnotations(
                 _currentPdfPath,
                 dialog.FileName,
-                savePageStrokes);
+                savePageStrokes,
+                savePageTextAnnotations);
 
             MessageBox.Show(
                 $"PDFを保存しました。\n\n{dialog.FileName}",
@@ -3272,6 +3898,58 @@ public partial class MainWindow : Window
 
         converted.RecalculateSelectionBounds();
         return converted;
+    }
+
+    /// 保存用に文字注釈のPDF座標を変換する。
+    private static TextAnnotationModel ConvertTextAnnotationForPdfSave(
+        TextAnnotationModel source,
+        bool isRotated270,
+        double pdfPageHeight)
+    {
+        Point savePosition =
+            isRotated270
+                ? new Point(
+                    pdfPageHeight - source.PdfPosition.Y,
+                    source.PdfPosition.X)
+                : source.PdfPosition;
+
+        return new TextAnnotationModel
+        {
+            Text = source.Text,
+            PdfPosition = savePosition,
+            Color = source.Color,
+            Opacity = source.Opacity,
+            FontSize = source.FontSize,
+            Mode = source.Mode,
+            Diameter = source.Diameter,
+            Comment = source.Comment
+        };
+    }
+
+    /// PDFから読み込んだ文字注釈の座標を画面表示用へ戻す。
+    private static TextAnnotationModel ConvertTextAnnotationFromPdfLoad(
+        TextAnnotationModel source,
+        bool isRotated270,
+        double pdfPageHeight)
+    {
+        Point displayPosition =
+            isRotated270
+                ? new Point(
+                    source.PdfPosition.Y,
+                    pdfPageHeight - source.PdfPosition.X)
+                : source.PdfPosition;
+
+        return new TextAnnotationModel
+        {
+            Text = source.Text,
+            PdfPosition = displayPosition,
+            Color = source.Color,
+            Opacity = source.Opacity,
+            FontSize = source.FontSize,
+            Mode = source.Mode,
+            Diameter = source.Diameter,
+            Comment = source.Comment
+        };
     }
 
     /// 読み込んだInk注釈を画面表示用の座標へ変換する。
@@ -3364,6 +4042,11 @@ public partial class MainWindow : Window
                     _currentPdfPath,
                     pageIndex);
 
+            List<TextAnnotationModel> loadedTextAnnotations =
+                _pdfService.LoadTextAnnotations(
+                    _currentPdfPath,
+                    pageIndex);
+
             var convertedStrokes =
                 new List<StrokeModel>();
 
@@ -3379,8 +4062,21 @@ public partial class MainWindow : Window
                     convertedStroke);
             }
 
+            List<TextAnnotationModel> convertedTextAnnotations =
+                loadedTextAnnotations
+                    .Select(annotation =>
+                        ConvertTextAnnotationFromPdfLoad(
+                            annotation,
+                            requiresLegacy270InkCorrection,
+                            pageSize.Height))
+                    .ToList();
+
             _pageStrokes[pageIndex] =
                 convertedStrokes;
+
+            _textService.SetPageAnnotations(
+                pageIndex,
+                convertedTextAnnotations);
 
             _pageUndoActions[pageIndex] =
                 new Stack<UndoAction>();
@@ -3480,6 +4176,11 @@ public partial class MainWindow : Window
                 _currentPdfPath,
                 _currentPageIndex);
 
+        List<TextAnnotationModel> loadedTextAnnotations =
+            _pdfService.LoadTextAnnotations(
+                _currentPdfPath,
+                _currentPageIndex);
+
         PageInfo pageInfo =
             _pdfService.GetPageInfo(
                 _currentPdfPath,
@@ -3502,6 +4203,19 @@ public partial class MainWindow : Window
                 convertedStroke);
         }
 
+        List<TextAnnotationModel> convertedTextAnnotations =
+            loadedTextAnnotations
+                .Select(annotation =>
+                    ConvertTextAnnotationFromPdfLoad(
+                        annotation,
+                        requiresLegacy270InkCorrection,
+                        _pdfPageHeight))
+                .ToList();
+
+        _textService.SetPageAnnotations(
+            _currentPageIndex,
+            convertedTextAnnotations);
+
         _undoActions.Clear();
         _redoActions.Clear();
     }
@@ -3511,6 +4225,18 @@ public partial class MainWindow : Window
         StrokeModel stroke)
     {
         return stroke.Mode switch
+        {
+            DrawingMode.Markup => _isMarkupVisible,
+            DrawingMode.Check => _isCheckVisible,
+            _ => true
+        };
+    }
+
+    /// 指定された文字注釈が現在の保存対象か確認する。
+    private bool IsTextAnnotationVisible(
+        TextAnnotationModel annotation)
+    {
+        return annotation.Mode switch
         {
             DrawingMode.Markup => _isMarkupVisible,
             DrawingMode.Check => _isCheckVisible,
@@ -3647,6 +4373,8 @@ public partial class MainWindow : Window
         {
             ClearStrokeSelection();
         }
+
+        _textService.ClearSelection();
 
         SaveCurrentModeSettings();
 
@@ -3807,7 +4535,37 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 選択中の注釈がある場合は、その注釈の色だけを変更する。
+        // 選択中の文字注釈がある場合は、TextServiceへ色変更を委譲する。
+        if (_textService.TryChangeSelectedColor(
+                color,
+                out StrokeColor oldTextColor))
+        {
+            TextAnnotationModel? selectedText =
+                _textService.SelectedAnnotation;
+
+            _currentStrokeColor =
+                color;
+
+            if (selectedText != null)
+            {
+                PushUndoAction(
+                    new UndoAction
+                    {
+                        Type = UndoActionType.EditColor,
+                        TextAnnotation = selectedText,
+                        PageIndex = _currentPageIndex,
+                        OldValue = oldTextColor.ToString(),
+                        NewValue = color.ToString()
+                    });
+            }
+
+            SaveCurrentModeSettings();
+            UpdateDrawingSettingsUi();
+            RedrawStrokes();
+            return;
+        }
+
+        // 選択中の線注釈がある場合は、その注釈の色だけを変更する。
         // 透明度は別の編集項目として扱うため、ここでは変更しない。
         if (_selectedStroke != null &&
             _strokes.Contains(_selectedStroke))
@@ -3957,16 +4715,30 @@ public partial class MainWindow : Window
         object sender,
         MouseButtonEventArgs e)
     {
-        if (_isUpdatingDrawingSettingsUi ||
-            _selectedStroke == null ||
+        if (_isUpdatingDrawingSettingsUi)
+        {
+            _opacityEditingStroke = null;
+            return;
+        }
+
+        if (_textService.BeginSelectedOpacityEdit())
+        {
+            _opacityEditingStroke = null;
+            return;
+        }
+
+        if (_selectedStroke == null ||
             !_strokes.Contains(_selectedStroke))
         {
             _opacityEditingStroke = null;
             return;
         }
 
-        _opacityEditingStroke = _selectedStroke;
-        _opacityEditOriginalValue = _selectedStroke.Opacity;
+        _opacityEditingStroke =
+            _selectedStroke;
+
+        _opacityEditOriginalValue =
+            _selectedStroke.Opacity;
     }
 
     /// 透明度スライダーのドラッグ終了時に、変更を1回のUndo履歴へ登録する。
@@ -4007,11 +4779,18 @@ public partial class MainWindow : Window
 
         _currentStrokeOpacity = opacity;
 
-        if (_selectedStroke != null &&
-            _strokes.Contains(_selectedStroke))
+        if (_textService.SetSelectedOpacity(
+                opacity))
         {
-            // ドラッグ中は見た目へ即時反映し、履歴はドラッグ終了時に1件だけ登録する。
-            _selectedStroke.Opacity = opacity;
+            // TextService側で選択中文字へ即時反映する。
+            RedrawStrokes();
+        }
+        else if (_selectedStroke != null &&
+                 _strokes.Contains(_selectedStroke))
+        {
+            _selectedStroke.Opacity =
+                opacity;
+
             RedrawStrokes();
         }
 
@@ -4029,7 +4808,32 @@ public partial class MainWindow : Window
     /// 透明度変更を1回分のUndo履歴として確定する。
     private void CommitOpacityEditUndo()
     {
-        StrokeModel? stroke = _opacityEditingStroke;
+        if (_textService.TryCommitOpacityEdit(
+                out TextAnnotationModel? textAnnotation,
+                out byte oldTextValue,
+                out byte newTextValue))
+        {
+            if (textAnnotation != null)
+            {
+                PushUndoAction(
+                    new UndoAction
+                    {
+                        Type = UndoActionType.EditOpacity,
+                        TextAnnotation = textAnnotation,
+                        PageIndex = _currentPageIndex,
+                        OldValue = oldTextValue.ToString(
+                            CultureInfo.InvariantCulture),
+                        NewValue = newTextValue.ToString(
+                            CultureInfo.InvariantCulture)
+                    });
+            }
+
+            return;
+        }
+
+        StrokeModel? stroke =
+            _opacityEditingStroke;
+
         _opacityEditingStroke = null;
 
         if (stroke == null ||
@@ -4038,7 +4842,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        byte newValue = stroke.Opacity;
+        byte newValue =
+            stroke.Opacity;
 
         if (_opacityEditOriginalValue == newValue)
         {
