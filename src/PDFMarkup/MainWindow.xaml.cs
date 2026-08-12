@@ -39,6 +39,7 @@ public partial class MainWindow : Window
     {
         AddStroke,
         AddText,
+        DeleteText,
         DeleteStroke,
         EditDiameter,
         EditComment,
@@ -1147,17 +1148,38 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 消しゴムモードでは、クリックした注釈だけを削除する。
-        // 空白部分をクリックしても新しい線は描画しない。
+        // 消しゴムモードでは、クリックした文字または線注釈だけを削除する。
+        // 文字を優先し、該当しない場合だけ線を検索する。
         if (_currentToolMode == ToolMode.Eraser)
         {
-            StrokeModel? eraseTarget =
-                FindStrokeAtCanvasPoint(canvasPoint);
+            Point erasePdfPoint =
+                _drawingService.ConvertCanvasPointToPdfPoint(
+                    canvasPoint,
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight,
+                    _pdfPageWidth,
+                    _pdfPageHeight);
 
-            if (eraseTarget != null)
+            TextAnnotationModel? eraseTextTarget =
+                _textService.FindAnnotationAtPdfPoint(
+                    _currentPageIndex,
+                    erasePdfPoint);
+
+            if (eraseTextTarget != null)
             {
-                DeleteStroke(
-                    eraseTarget);
+                DeleteTextAnnotation(
+                    eraseTextTarget);
+            }
+            else
+            {
+                StrokeModel? eraseStrokeTarget =
+                    FindStrokeAtCanvasPoint(canvasPoint);
+
+                if (eraseStrokeTarget != null)
+                {
+                    DeleteStroke(
+                        eraseStrokeTarget);
+                }
             }
 
             e.Handled = true;
@@ -2148,7 +2170,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        DeleteSelectedStroke();
+        DeleteSelectedAnnotation();
         e.Handled = true;
     }
 
@@ -2454,16 +2476,75 @@ public partial class MainWindow : Window
         UpdateCanvasCursor();
     }
 
-    /// 現在選択されている注釈を削除する。
-    private void DeleteSelectedStroke()
+    /// 現在選択されている文字または線注釈を削除する。
+    private void DeleteSelectedAnnotation()
     {
-        if (_selectedStroke == null)
+        TextAnnotationModel? selectedText =
+            _textService.SelectedAnnotation;
+
+        if (selectedText != null)
+        {
+            DeleteTextAnnotation(
+                selectedText);
+
+            return;
+        }
+
+        if (_selectedStroke != null)
+        {
+            DeleteStroke(
+                _selectedStroke);
+        }
+    }
+
+    /// 指定された文字注釈を削除し、Undo履歴へ登録する。
+    private void DeleteTextAnnotation(
+        TextAnnotationModel annotation)
+    {
+        IReadOnlyList<TextAnnotationModel> annotations =
+            _textService.GetPageAnnotations(
+                _currentPageIndex);
+
+        int annotationIndex =
+            -1;
+
+        for (int index = 0;
+            index < annotations.Count;
+            index++)
+        {
+            if (ReferenceEquals(
+                    annotations[index],
+                    annotation))
+            {
+                annotationIndex = index;
+                break;
+            }
+        }
+
+        if (annotationIndex < 0)
         {
             return;
         }
 
-        DeleteStroke(
-            _selectedStroke);
+        CommitCommentEditUndo();
+
+        if (!_textService.RemoveAnnotation(
+                _currentPageIndex,
+                annotation))
+        {
+            return;
+        }
+
+        PushUndoAction(
+            new UndoAction
+            {
+                Type = UndoActionType.DeleteText,
+                TextAnnotation = annotation,
+                TextAnnotationIndex = annotationIndex,
+                PageIndex = _currentPageIndex
+            });
+
+        RedrawStrokes();
     }
 
     /// 指定された注釈を削除し、Undo履歴へ登録する。
@@ -3442,6 +3523,28 @@ public partial class MainWindow : Window
                     _textService.InsertAnnotation(
                         action.PageIndex,
                         action.TextAnnotationIndex,
+                        action.TextAnnotation);
+                }
+
+                break;
+
+            case UndoActionType.DeleteText:
+                if (action.TextAnnotation == null)
+                {
+                    break;
+                }
+
+                if (isUndo)
+                {
+                    _textService.InsertAnnotation(
+                        action.PageIndex,
+                        action.TextAnnotationIndex,
+                        action.TextAnnotation);
+                }
+                else
+                {
+                    _textService.RemoveAnnotation(
+                        action.PageIndex,
                         action.TextAnnotation);
                 }
 
