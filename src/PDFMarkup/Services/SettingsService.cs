@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -8,7 +8,7 @@ namespace PDFMarkup.Services;
 
 /// <summary>
 /// PDFMarkupの軽量なローカル設定を読み書きするサービス。
-/// 現在は最近使ったPDFのみを保持する。
+/// 最近使ったPDFやウィンドウ表示状態など、ユーザーごとの設定を保持する。
 /// </summary>
 public sealed class SettingsService
 {
@@ -107,6 +107,137 @@ public sealed class SettingsService
         return settings.RecentFiles;
     }
 
+
+    /// <summary>
+    /// 指定PDFを最近使ったファイル一覧から削除する。
+    /// PDFファイル本体は削除しない。
+    /// </summary>
+    public IReadOnlyList<string> RemoveRecentFile(
+        string filePath)
+    {
+        string fullPath =
+            Path.GetFullPath(
+                filePath);
+
+        AppSettings settings =
+            LoadSettings();
+
+        settings.RecentFiles.RemoveAll(path =>
+            string.Equals(
+                path,
+                fullPath,
+                StringComparison.OrdinalIgnoreCase));
+
+        SaveSettings(
+            settings);
+
+        return settings.RecentFiles;
+    }
+
+    /// <summary>
+    /// 最近使ったファイル履歴をすべて削除する。
+    /// PDFファイル本体は削除しない。
+    /// </summary>
+    public void ClearRecentFiles()
+    {
+        AppSettings settings =
+            LoadSettings();
+
+        settings.RecentFiles.Clear();
+
+        SaveSettings(
+            settings);
+    }
+
+
+    /// <summary>
+    /// 保存済みのウィンドウ位置・サイズを取得する。
+    /// 未保存の場合はnullを返す。
+    /// </summary>
+    public WindowPlacementSettings? LoadWindowPlacement()
+    {
+        return LoadSettings().WindowPlacement;
+    }
+
+    /// <summary>
+    /// ウィンドウの通常時位置・サイズと最大化状態を保存する。
+    /// </summary>
+    public void SaveWindowPlacement(
+        double left,
+        double top,
+        double width,
+        double height,
+        bool isMaximized)
+    {
+        if (double.IsNaN(left) ||
+            double.IsNaN(top) ||
+            double.IsNaN(width) ||
+            double.IsNaN(height) ||
+            width <= 0 ||
+            height <= 0)
+        {
+            return;
+        }
+
+        AppSettings settings =
+            LoadSettings();
+
+        settings.WindowPlacement =
+            new WindowPlacementSettings
+            {
+                Left = left,
+                Top = top,
+                Width = width,
+                Height = height,
+                IsMaximized = isMaximized
+            };
+
+        SaveSettings(
+            settings);
+    }
+
+    /// <summary>
+    /// 保存済みの左右パネル状態を取得する。
+    /// 未保存の場合はnullを返す。
+    /// </summary>
+    public PanelLayoutSettings? LoadPanelLayout()
+    {
+        return LoadSettings().PanelLayout;
+    }
+
+    /// <summary>
+    /// 左右パネルの開閉状態と、開いているときの幅を保存する。
+    /// </summary>
+    public void SavePanelLayout(
+        bool isLeftPanelOpen,
+        double leftPanelWidth,
+        bool isRightPanelOpen,
+        double rightPanelWidth)
+    {
+        if (double.IsNaN(leftPanelWidth) ||
+            double.IsNaN(rightPanelWidth) ||
+            leftPanelWidth <= 0 ||
+            rightPanelWidth <= 0)
+        {
+            return;
+        }
+
+        AppSettings settings =
+            LoadSettings();
+
+        settings.PanelLayout =
+            new PanelLayoutSettings
+            {
+                IsLeftPanelOpen = isLeftPanelOpen,
+                LeftPanelWidth = leftPanelWidth,
+                IsRightPanelOpen = isRightPanelOpen,
+                RightPanelWidth = rightPanelWidth
+            };
+
+        SaveSettings(
+            settings);
+    }
+
     /// <summary>
     /// settings.jsonを読み込む。
     /// ファイルが存在しない、または内容が壊れている場合は初期設定を返す。
@@ -176,10 +307,46 @@ public sealed class SettingsService
     }
 
     /// <summary>
+    /// 保存する左右パネルの開閉状態と幅。
+    /// 閉じている場合も、再度開くための直前幅を保持する。
+    /// </summary>
+    public sealed class PanelLayoutSettings
+    {
+        public bool IsLeftPanelOpen { get; set; } = true;
+
+        public double LeftPanelWidth { get; set; } = 220.0;
+
+        public bool IsRightPanelOpen { get; set; } = true;
+
+        public double RightPanelWidth { get; set; } = 260.0;
+    }
+
+    /// <summary>
+    /// 保存するウィンドウ位置・サイズ。
+    /// 最大化時もRestoreBounds相当の通常時サイズを保持する。
+    /// </summary>
+    public sealed class WindowPlacementSettings
+    {
+        public double Left { get; set; }
+
+        public double Top { get; set; }
+
+        public double Width { get; set; }
+
+        public double Height { get; set; }
+
+        public bool IsMaximized { get; set; }
+    }
+
+    /// <summary>
     /// settings.jsonへ保存する設定項目。
     /// </summary>
     private sealed class AppSettings
     {
         public List<string> RecentFiles { get; set; } = new();
+
+        public WindowPlacementSettings? WindowPlacement { get; set; }
+
+        public PanelLayoutSettings? PanelLayout { get; set; }
     }
 }

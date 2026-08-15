@@ -41,6 +41,7 @@ public partial class MainWindow : Window
         AddText,
         DeleteText,
         DeleteStroke,
+        EraseStrokeParts,
         EditDiameter,
         EditComment,
         EditColor,
@@ -63,6 +64,12 @@ public partial class MainWindow : Window
         public int TextAnnotationIndex { get; init; }
 
         public int PageIndex { get; init; }
+
+        // 部分消去1回分の前後状態。
+        // 1ドラッグを1回のUndo / Redoとして扱うために使用する。
+        public List<StrokeModel>? StrokesBefore { get; init; }
+
+        public List<StrokeModel>? StrokesAfter { get; init; }
 
         public string OldValue { get; init; } = string.Empty;
 
@@ -120,10 +127,16 @@ public partial class MainWindow : Window
             IOPath.GetDirectoryName(FullPath) ?? string.Empty;
     }
 
+    // ファイル操作コマンド
+    // 既存のボタン処理と同じメソッドを呼び、ショートカット専用の保存処理は持たせない。
+    private static readonly RoutedCommand OpenPdfCommand = new();
+    private static readonly RoutedCommand SavePdfCommand = new();
+    private static readonly RoutedCommand SaveAsPdfCommand = new();
+
     // ページ移動コマンド
     private static readonly RoutedCommand PreviousPageCommand = new();
-    private static readonly RoutedCommand NextPageCommand = new();    
-    
+    private static readonly RoutedCommand NextPageCommand = new();
+
     // サービス
     private readonly PdfService _pdfService = new();
     private readonly DrawingService _drawingService = new();
@@ -236,13 +249,23 @@ public partial class MainWindow : Window
     private bool _isDrawing;
     private Point _lastCanvasPoint;
 
+    // 消しゴムドラッグの状態。
+    // 通常時は触れた部分だけ、Ctrl押下中は触れたストローク全体を削除する。
+    private bool _isErasing;
+    private bool _eraserChanged;
+    private Point _lastEraserCanvasPoint;
+    private List<StrokeModel>? _eraserBeforeStrokes;
+
+    // 画面上の消しゴム半径。ズームにかかわらず操作感を一定にする。
+    private const double EraserRadiusCanvas = 10.0;
+
     // 現在のPDF情報
     private string? _currentPdfPath;
     private int _currentPageIndex;
     private int _pageCount;
 
     // 最後に保存した状態から編集内容が変更されているかを表す。
-    // true の間はタイトルへ * を表示し、終了・別PDF読込時に保存確認を行う。
+    // true の間はタイトルへ * を表示し、ウィンドウ終了時に保存確認を行う。
     private bool _isDirty;
 
     private double _pdfPageWidth;
@@ -277,11 +300,51 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        // 前回終了時のウィンドウ位置・サイズを復元する。
+        RestoreWindowPlacement();
+
         _textService.AnnotationCommitted +=
             TextService_AnnotationCommitted;
 
         PageListBox.ItemsSource =
             _pageThumbnails;
+
+        // 一般的なWindowsアプリと同じファイル操作ショートカットを登録する。
+        InputBindings.Add(
+            new KeyBinding(
+                OpenPdfCommand,
+                new KeyGesture(
+                    Key.O,
+                    ModifierKeys.Control)));
+
+        InputBindings.Add(
+            new KeyBinding(
+                SavePdfCommand,
+                new KeyGesture(
+                    Key.S,
+                    ModifierKeys.Control)));
+
+        InputBindings.Add(
+            new KeyBinding(
+                SaveAsPdfCommand,
+                new KeyGesture(
+                    Key.S,
+                    ModifierKeys.Control | ModifierKeys.Shift)));
+
+        CommandBindings.Add(
+            new CommandBinding(
+                OpenPdfCommand,
+                OpenPdfMenuItem_Click));
+
+        CommandBindings.Add(
+            new CommandBinding(
+                SavePdfCommand,
+                SaveMenuItem_Click));
+
+        CommandBindings.Add(
+            new CommandBinding(
+                SaveAsPdfCommand,
+                SaveAsMenuItem_Click));
 
         InputBindings.Add(
             new KeyBinding(
@@ -361,6 +424,9 @@ public partial class MainWindow : Window
         // ボタン表示とカーソルは初期化処理からまとめて設定する。
         InitializeReplaceableUiVisuals();
 
+        // 前回終了時の左右パネルの開閉状態・幅を復元する。
+        RestorePanelLayout();
+
         // PDF未選択の起動画面へ、前回までに開いたPDFを表示する。
         RefreshRecentFilesStartPanel();
 
@@ -379,7 +445,13 @@ public partial class MainWindow : Window
         if (!ConfirmSaveChangesBeforeContinue())
         {
             e.Cancel = true;
+            return;
         }
+
+        // Closedまで進むとWindowStateが通常状態へ戻る場合があるため、
+        // 最大化状態を含むウィンドウ情報はClosing中に保存する。
+        SaveWindowPlacement();
+        SavePanelLayout();
     }
 
     /// ウィンドウ終了時にバックグラウンド処理を停止する。
@@ -388,6 +460,93 @@ public partial class MainWindow : Window
         EventArgs e)
     {
         CancelThumbnailGeneration();
+    }
+
+    /// <summary>
+    /// 前回終了時のウィンドウ位置・サイズを復元する。
+    /// 保存座標が現在の仮想デスクトップ外にある場合は位置を復元せず、
+    /// XAML既定の中央表示を使用する。
+    /// </summary>
+    private void RestoreWindowPlacement()
+    {
+        SettingsService.WindowPlacementSettings? placement =
+            _settingsService.LoadWindowPlacement();
+
+        if (placement == null ||
+            placement.Width <= 0 ||
+            placement.Height <= 0)
+        {
+            return;
+        }
+
+        Width =
+            Math.Max(
+                MinWidth,
+                placement.Width);
+
+        Height =
+            Math.Max(
+                MinHeight,
+                placement.Height);
+
+        var savedBounds =
+            new Rect(
+                placement.Left,
+                placement.Top,
+                Width,
+                Height);
+
+        var virtualScreenBounds =
+            new Rect(
+                SystemParameters.VirtualScreenLeft,
+                SystemParameters.VirtualScreenTop,
+                SystemParameters.VirtualScreenWidth,
+                SystemParameters.VirtualScreenHeight);
+
+        // 少しでも現在の仮想デスクトップに重なっていれば保存位置を採用する。
+        if (savedBounds.IntersectsWith(virtualScreenBounds))
+        {
+            WindowStartupLocation =
+                WindowStartupLocation.Manual;
+
+            Left =
+                placement.Left;
+
+            Top =
+                placement.Top;
+        }
+
+        if (placement.IsMaximized)
+        {
+            WindowState =
+                WindowState.Maximized;
+        }
+    }
+
+    /// <summary>
+    /// 現在ウィンドウの通常時位置・サイズと最大化状態を保存する。
+    /// 最大化中はRestoreBoundsを使用し、次回通常表示へ戻した際のサイズも維持する。
+    /// </summary>
+    private void SaveWindowPlacement()
+    {
+        Rect bounds =
+            WindowState == WindowState.Normal
+                ? new Rect(Left, Top, ActualWidth, ActualHeight)
+                : RestoreBounds;
+
+        if (bounds.IsEmpty ||
+            bounds.Width <= 0 ||
+            bounds.Height <= 0)
+        {
+            return;
+        }
+
+        _settingsService.SaveWindowPlacement(
+            bounds.Left,
+            bounds.Top,
+            bounds.Width,
+            bounds.Height,
+            WindowState == WindowState.Maximized);
     }
 
     /// PDF選択ダイアログを表示する。
@@ -408,15 +567,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 別のPDFへ切り替える前に、現在の編集内容を保存するか確認する。
-        if (!ConfirmSaveChangesBeforeContinue())
-        {
-            return;
-        }
-
         try
         {
-            OpenPdf(dialog.FileName);
+            OpenPdfInAvailableWindow(
+                dialog.FileName);
         }
         catch (Exception ex)
         {
@@ -426,6 +580,114 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
+    }
+
+    /// 指定PDFを開くためのウィンドウを決定する。
+    /// 同じPDFがすでに開かれている場合は、そのウィンドウを前面へ表示する。
+    /// 同じPDFが開かれておらず現在のウィンドウが空なら現在ウィンドウを使用し、
+    /// 現在ウィンドウで別PDFを表示中なら新しいウィンドウで開く。
+    private void OpenPdfInAvailableWindow(
+        string filePath)
+    {
+        MainWindow? existingWindow =
+            Application.Current.Windows
+                .OfType<MainWindow>()
+                .FirstOrDefault(window =>
+                    AreSamePdfPath(
+                        window._currentPdfPath,
+                        filePath));
+
+        if (existingWindow != null)
+        {
+            BringWindowToFront(
+                existingWindow);
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(
+                _currentPdfPath))
+        {
+            OpenPdf(
+                filePath);
+
+            return;
+        }
+
+        var newWindow =
+            new MainWindow();
+
+        try
+        {
+            newWindow.OpenPdf(
+                filePath);
+
+            newWindow.Show();
+        }
+        catch
+        {
+            // 表示前の新規ウィンドウで読込に失敗した場合は破棄する。
+            newWindow.Close();
+            throw;
+        }
+    }
+
+    /// 2つのPDFパスが同じファイルを指しているか確認する。
+    /// Windowsではファイル名の大文字・小文字を区別しないため、
+    /// 絶対パスへ正規化して大文字・小文字を無視して比較する。
+    private static bool AreSamePdfPath(
+        string? path1,
+        string? path2)
+    {
+        if (string.IsNullOrWhiteSpace(path1) ||
+            string.IsNullOrWhiteSpace(path2))
+        {
+            return false;
+        }
+
+        try
+        {
+            string fullPath1 =
+                IOPath.GetFullPath(path1);
+
+            string fullPath2 =
+                IOPath.GetFullPath(path2);
+
+            return string.Equals(
+                fullPath1,
+                fullPath2,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            // 不正なパスが混ざっていてもPDFを開く処理自体は継続できるよう、
+            // 比較不能な場合は別ファイルとして扱う。
+            return false;
+        }
+    }
+
+    /// すでに対象PDFを表示しているウィンドウを復元して前面へ表示する。
+    private static void BringWindowToFront(
+        MainWindow window)
+    {
+        if (window.WindowState == WindowState.Minimized)
+        {
+            window.WindowState =
+                WindowState.Normal;
+        }
+
+        window.Show();
+        window.Activate();
+
+        // Activateだけでは他アプリの背後に残る場合があるため、
+        // Topmostを一瞬だけ切り替えて前面表示を確実にする。
+        bool wasTopmost =
+            window.Topmost;
+
+        window.Topmost = true;
+        window.Topmost = wasTopmost;
+
+        window.Focus();
     }
 
     /// 指定されたPDFを開く。
@@ -1151,7 +1413,8 @@ public partial class MainWindow : Window
             TextAnnotationModel? hitText =
                 _textService.SelectAnnotationAtPdfPoint(
                     _currentPageIndex,
-                    hitPdfPoint);
+                    hitPdfPoint,
+                    IsTextAnnotationVisible);
 
             if (hitText != null)
             {
@@ -1188,8 +1451,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 消しゴムモードでは、クリックした文字または線注釈だけを削除する。
-        // 文字を優先し、該当しない場合だけ線を検索する。
+        // 消しゴムモードでは、文字はクリック削除、線はドラッグ消去する。
+        // 通常は触れた部分だけを消し、Ctrl押下中は触れたストローク全体を消す。
         if (_currentToolMode == ToolMode.Eraser)
         {
             Point erasePdfPoint =
@@ -1203,24 +1466,20 @@ public partial class MainWindow : Window
             TextAnnotationModel? eraseTextTarget =
                 _textService.FindAnnotationAtPdfPoint(
                     _currentPageIndex,
-                    erasePdfPoint);
+                    erasePdfPoint,
+                    IsTextAnnotationVisible);
 
             if (eraseTextTarget != null)
             {
                 DeleteTextAnnotation(
                     eraseTextTarget);
-            }
-            else
-            {
-                StrokeModel? eraseStrokeTarget =
-                    FindStrokeAtCanvasPoint(canvasPoint);
 
-                if (eraseStrokeTarget != null)
-                {
-                    DeleteStroke(
-                        eraseStrokeTarget);
-                }
+                e.Handled = true;
+                return;
             }
+
+            BeginEraserDrag(
+                canvasPoint);
 
             e.Handled = true;
             return;
@@ -1795,6 +2054,22 @@ public partial class MainWindow : Window
         object sender,
         MouseEventArgs e)
     {
+        if (_currentToolMode == ToolMode.Eraser &&
+            _isErasing)
+        {
+            Point currentPoint =
+                _drawingService.ClampCanvasPoint(
+                    e.GetPosition(DrawingCanvas),
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight);
+
+            ContinueEraserDrag(
+                currentPoint);
+
+            e.Handled = true;
+            return;
+        }
+
         if (!_isDrawing ||
             _currentStrokeModel == null ||
             _currentStrokeView == null)
@@ -1847,6 +2122,23 @@ public partial class MainWindow : Window
         object sender,
         MouseButtonEventArgs e)
     {
+        if (_currentToolMode == ToolMode.Eraser &&
+            _isErasing)
+        {
+            Point endPoint =
+                _drawingService.ClampCanvasPoint(
+                    e.GetPosition(DrawingCanvas),
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight);
+
+            ContinueEraserDrag(
+                endPoint);
+
+            EndEraserDrag();
+            e.Handled = true;
+            return;
+        }
+
         if (!_isDrawing)
         {
             return;
@@ -1933,42 +2225,486 @@ public partial class MainWindow : Window
             (scaleX + scaleY) / 2.0);
     }
 
-    /// 指定位置にある注釈を後から描いた順に検索する。
+    /// 指定位置にある線注釈を、外接矩形ではなく実際の線分との距離で検索する。
+    /// 後から描いた線を優先する。
     private StrokeModel? FindStrokeAtCanvasPoint(
         Point canvasPoint)
     {
-        Point pdfPoint =
-            _drawingService.ConvertCanvasPointToPdfPoint(
-                canvasPoint,
-                DrawingCanvas.ActualWidth,
-                DrawingCanvas.ActualHeight,
-                _pdfPageWidth,
-                _pdfPageHeight);
-
         for (int index = _strokes.Count - 1;
             index >= 0;
             index--)
         {
-            StrokeModel stroke = _strokes[index];
+            StrokeModel stroke =
+                _strokes[index];
 
-            // 非表示中の注釈はクリック対象にしない。
-            if (!IsStrokeVisible(stroke))
+            if (!IsStrokeVisible(stroke) ||
+                stroke.PdfPoints.Count < 2)
             {
                 continue;
             }
 
-            if (stroke.SelectionBounds.IsEmpty)
-            {
-                stroke.RecalculateSelectionBounds();
-            }
+            double hitTolerance =
+                Math.Max(
+                    5.0,
+                    stroke.Thickness / 2.0 + 4.0);
 
-            if (stroke.SelectionBounds.Contains(pdfPoint))
+            if (IsCanvasPointNearStroke(
+                    canvasPoint,
+                    stroke,
+                    hitTolerance))
             {
                 return stroke;
             }
         }
 
         return null;
+    }
+
+    /// 指定Canvas座標がストロークの実際の線分へ十分近いか判定する。
+    private bool IsCanvasPointNearStroke(
+        Point canvasPoint,
+        StrokeModel stroke,
+        double toleranceCanvas)
+    {
+        for (int pointIndex = 0;
+            pointIndex + 1 < stroke.PdfPoints.Count;
+            pointIndex++)
+        {
+            Point startPoint =
+                _drawingService.ConvertPdfPointToCanvasPoint(
+                    stroke.PdfPoints[pointIndex],
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight,
+                    _pdfPageWidth,
+                    _pdfPageHeight);
+
+            Point endPoint =
+                _drawingService.ConvertPdfPointToCanvasPoint(
+                    stroke.PdfPoints[pointIndex + 1],
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight,
+                    _pdfPageWidth,
+                    _pdfPageHeight);
+
+            if (DistancePointToSegment(
+                    canvasPoint,
+                    startPoint,
+                    endPoint) <= toleranceCanvas)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// 点から線分までの最短距離を取得する。
+    private static double DistancePointToSegment(
+        Point point,
+        Point segmentStart,
+        Point segmentEnd)
+    {
+        double deltaX =
+            segmentEnd.X - segmentStart.X;
+
+        double deltaY =
+            segmentEnd.Y - segmentStart.Y;
+
+        double lengthSquared =
+            deltaX * deltaX +
+            deltaY * deltaY;
+
+        if (lengthSquared < 0.000001)
+        {
+            double pointDeltaX =
+                point.X - segmentStart.X;
+
+            double pointDeltaY =
+                point.Y - segmentStart.Y;
+
+            return Math.Sqrt(
+                pointDeltaX * pointDeltaX +
+                pointDeltaY * pointDeltaY);
+        }
+
+        double projection =
+            ((point.X - segmentStart.X) * deltaX +
+             (point.Y - segmentStart.Y) * deltaY) /
+            lengthSquared;
+
+        projection =
+            Math.Clamp(
+                projection,
+                0.0,
+                1.0);
+
+        double nearestX =
+            segmentStart.X +
+            projection * deltaX;
+
+        double nearestY =
+            segmentStart.Y +
+            projection * deltaY;
+
+        double differenceX =
+            point.X - nearestX;
+
+        double differenceY =
+            point.Y - nearestY;
+
+        return Math.Sqrt(
+            differenceX * differenceX +
+            differenceY * differenceY);
+    }
+
+    /// 消しゴムのドラッグを開始する。
+    private void BeginEraserDrag(
+        Point canvasPoint)
+    {
+        _isErasing = true;
+        _eraserChanged = false;
+        _lastEraserCanvasPoint = canvasPoint;
+        _eraserBeforeStrokes =
+            new List<StrokeModel>(_strokes);
+
+        ApplyEraserAtCanvasPoint(
+            canvasPoint);
+
+        DrawingCanvas.CaptureMouse();
+    }
+
+    /// 消しゴムドラッグ中の軌跡を補間して、速く動かしても消去漏れしないようにする。
+    private void ContinueEraserDrag(
+        Point canvasPoint)
+    {
+        double deltaX =
+            canvasPoint.X - _lastEraserCanvasPoint.X;
+
+        double deltaY =
+            canvasPoint.Y - _lastEraserCanvasPoint.Y;
+
+        double distance =
+            Math.Sqrt(
+                deltaX * deltaX +
+                deltaY * deltaY);
+
+        double spacing =
+            Math.Max(
+                2.0,
+                EraserRadiusCanvas * 0.45);
+
+        int stepCount =
+            Math.Max(
+                1,
+                (int)Math.Ceiling(
+                    distance / spacing));
+
+        for (int stepIndex = 1;
+            stepIndex <= stepCount;
+            stepIndex++)
+        {
+            double ratio =
+                (double)stepIndex /
+                stepCount;
+
+            Point samplePoint =
+                new Point(
+                    _lastEraserCanvasPoint.X + deltaX * ratio,
+                    _lastEraserCanvasPoint.Y + deltaY * ratio);
+
+            ApplyEraserAtCanvasPoint(
+                samplePoint);
+        }
+
+        _lastEraserCanvasPoint =
+            canvasPoint;
+    }
+
+    /// 1回の消しゴムドラッグを終了し、変更全体を1件のUndo履歴へ登録する。
+    private void EndEraserDrag()
+    {
+        if (!_isErasing)
+        {
+            return;
+        }
+
+        _isErasing = false;
+
+        if (DrawingCanvas.IsMouseCaptured)
+        {
+            DrawingCanvas.ReleaseMouseCapture();
+        }
+
+        if (_eraserChanged &&
+            _eraserBeforeStrokes != null)
+        {
+            PushUndoAction(
+                new UndoAction
+                {
+                    Type = UndoActionType.EraseStrokeParts,
+                    PageIndex = _currentPageIndex,
+                    StrokesBefore = _eraserBeforeStrokes,
+                    StrokesAfter = new List<StrokeModel>(_strokes)
+                });
+        }
+
+        _eraserBeforeStrokes = null;
+        _eraserChanged = false;
+        RedrawStrokes();
+    }
+
+    /// 現在位置へ消しゴムを適用する。
+    /// Ctrl押下中は実線へ触れたストローク全体、それ以外は触れた部分だけを削除する。
+    private void ApplyEraserAtCanvasPoint(
+        Point eraserPoint)
+    {
+        if (IsControlPressed())
+        {
+            StrokeModel? targetStroke =
+                FindStrokeAtCanvasPoint(
+                    eraserPoint);
+
+            if (targetStroke != null)
+            {
+                _strokes.Remove(
+                    targetStroke);
+
+                if (ReferenceEquals(
+                        _selectedStroke,
+                        targetStroke))
+                {
+                    ClearStrokeSelection();
+                }
+
+                _eraserChanged = true;
+                RedrawStrokes();
+            }
+
+            return;
+        }
+
+        bool changed = false;
+
+        // 後ろから処理して、置換によるインデックスずれを防ぐ。
+        for (int strokeIndex = _strokes.Count - 1;
+            strokeIndex >= 0;
+            strokeIndex--)
+        {
+            StrokeModel stroke =
+                _strokes[strokeIndex];
+
+            if (!IsStrokeVisible(stroke) ||
+                !IsCanvasPointNearStroke(
+                    eraserPoint,
+                    stroke,
+                    EraserRadiusCanvas + stroke.Thickness / 2.0))
+            {
+                continue;
+            }
+
+            List<StrokeModel> remainingPieces =
+                SplitStrokeOutsideEraser(
+                    stroke,
+                    eraserPoint,
+                    EraserRadiusCanvas);
+
+            _strokes.RemoveAt(
+                strokeIndex);
+
+            for (int pieceIndex = remainingPieces.Count - 1;
+                pieceIndex >= 0;
+                pieceIndex--)
+            {
+                _strokes.Insert(
+                    strokeIndex,
+                    remainingPieces[pieceIndex]);
+            }
+
+            if (ReferenceEquals(
+                    _selectedStroke,
+                    stroke))
+            {
+                ClearStrokeSelection();
+            }
+
+            changed = true;
+        }
+
+        if (changed)
+        {
+            _eraserChanged = true;
+            RedrawStrokes();
+        }
+    }
+
+    /// 消しゴム円の外側に残るストローク片へ分割する。
+    /// 疎な直線・矢印でも途中を正しく消せるよう、各線分を画面座標で細かく補間して判定する。
+    private List<StrokeModel> SplitStrokeOutsideEraser(
+        StrokeModel source,
+        Point eraserPoint,
+        double eraserRadiusCanvas)
+    {
+        var result =
+            new List<StrokeModel>();
+
+        var currentPiecePoints =
+            new List<Point>();
+
+        const double sampleSpacingCanvas = 2.0;
+
+        for (int segmentIndex = 0;
+            segmentIndex + 1 < source.PdfPoints.Count;
+            segmentIndex++)
+        {
+            Point canvasStart =
+                _drawingService.ConvertPdfPointToCanvasPoint(
+                    source.PdfPoints[segmentIndex],
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight,
+                    _pdfPageWidth,
+                    _pdfPageHeight);
+
+            Point canvasEnd =
+                _drawingService.ConvertPdfPointToCanvasPoint(
+                    source.PdfPoints[segmentIndex + 1],
+                    DrawingCanvas.ActualWidth,
+                    DrawingCanvas.ActualHeight,
+                    _pdfPageWidth,
+                    _pdfPageHeight);
+
+            double deltaX =
+                canvasEnd.X - canvasStart.X;
+
+            double deltaY =
+                canvasEnd.Y - canvasStart.Y;
+
+            double segmentLength =
+                Math.Sqrt(
+                    deltaX * deltaX +
+                    deltaY * deltaY);
+
+            int sampleCount =
+                Math.Max(
+                    1,
+                    (int)Math.Ceiling(
+                        segmentLength / sampleSpacingCanvas));
+
+            for (int sampleIndex = 0;
+                sampleIndex <= sampleCount;
+                sampleIndex++)
+            {
+                // 隣接線分との共有始点は二重追加しない。
+                if (segmentIndex > 0 &&
+                    sampleIndex == 0)
+                {
+                    continue;
+                }
+
+                double ratio =
+                    (double)sampleIndex /
+                    sampleCount;
+
+                Point canvasSample =
+                    new Point(
+                        canvasStart.X + deltaX * ratio,
+                        canvasStart.Y + deltaY * ratio);
+
+                double differenceX =
+                    canvasSample.X - eraserPoint.X;
+
+                double differenceY =
+                    canvasSample.Y - eraserPoint.Y;
+
+                bool isErased =
+                    differenceX * differenceX +
+                    differenceY * differenceY <=
+                    eraserRadiusCanvas * eraserRadiusCanvas;
+
+                if (isErased)
+                {
+                    AddRemainingStrokePiece(
+                        source,
+                        currentPiecePoints,
+                        result);
+
+                    currentPiecePoints.Clear();
+                    continue;
+                }
+
+                Point pdfSample =
+                    _drawingService.ConvertCanvasPointToPdfPoint(
+                        canvasSample,
+                        DrawingCanvas.ActualWidth,
+                        DrawingCanvas.ActualHeight,
+                        _pdfPageWidth,
+                        _pdfPageHeight);
+
+                if (currentPiecePoints.Count == 0 ||
+                    DistanceBetweenPoints(
+                        currentPiecePoints[^1],
+                        pdfSample) > 0.0001)
+                {
+                    currentPiecePoints.Add(
+                        pdfSample);
+                }
+            }
+        }
+
+        AddRemainingStrokePiece(
+            source,
+            currentPiecePoints,
+            result);
+
+        return result;
+    }
+
+    /// 消去後に残った点列を、元ストロークの属性を引き継いだ新しいストロークとして追加する。
+    private static void AddRemainingStrokePiece(
+        StrokeModel source,
+        List<Point> points,
+        List<StrokeModel> result)
+    {
+        if (points.Count < 2)
+        {
+            return;
+        }
+
+        var piece =
+            new StrokeModel
+            {
+                Mode = source.Mode,
+                Color = source.Color,
+                Thickness = source.Thickness,
+                Opacity = source.Opacity,
+                Diameter = source.Diameter,
+                Comment = source.Comment
+            };
+
+        foreach (Point point in points)
+        {
+            piece.PdfPoints.Add(
+                point);
+        }
+
+        piece.RecalculateSelectionBounds();
+        result.Add(
+            piece);
+    }
+
+    /// 2点間の距離を取得する。
+    private static double DistanceBetweenPoints(
+        Point point1,
+        Point point2)
+    {
+        double deltaX =
+            point2.X - point1.X;
+
+        double deltaY =
+            point2.Y - point1.Y;
+
+        return Math.Sqrt(
+            deltaX * deltaX +
+            deltaY * deltaY);
     }
 
     /// 選択中の注釈を解除し、コメント欄だけを空にする。
@@ -2219,6 +2955,11 @@ public partial class MainWindow : Window
         object sender,
         RoutedEventArgs e)
     {
+        if (_isErasing)
+        {
+            EndEraserDrag();
+        }
+
         CommitCommentEditUndo();
         ClearStrokeSelection();
         _textService.ClearSelection();
@@ -2648,7 +3389,6 @@ public partial class MainWindow : Window
     }
 
     /// 選択した文字注釈の共通情報を描画設定と右パネルへ反映する。
-    /// 文字列・文字サイズの専用UIは次STEPで追加する。
     private void ApplySelectedTextToRightPanel(
         TextAnnotationModel annotation)
     {
@@ -2928,23 +3668,6 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    /// Enterキーでコメント編集を確定する。
-    private void AnnotationCommentTextBox_KeyDown(
-        object sender,
-        KeyEventArgs e)
-    {
-        if (e.Key != Key.Enter)
-        {
-            return;
-        }
-
-        CommitCommentEditUndo();
-
-        // Enter確定後に入力フォーカスを外す。
-        Keyboard.ClearFocus();
-
-        e.Handled = true;
-    }
 
     /// コメント変更を1回分のUndo履歴として確定する。
     private void CommitCommentEditUndo()
@@ -3163,46 +3886,6 @@ public partial class MainWindow : Window
         RedrawStrokes();
     }
 
-    /// 口径に対応するチェック色を取得する。
-    private static bool TryGetColorForDiameter(
-        string diameter,
-        out StrokeColor color)
-    {
-        switch (diameter)
-        {
-            case "φ50":
-                color = StrokeColor.Blue;
-                return true;
-
-            case "φ75":
-                color = StrokeColor.Yellow;
-                return true;
-
-            case "φ100":
-                color = StrokeColor.Brown;
-                return true;
-
-            case "φ150":
-                color = StrokeColor.Green;
-                return true;
-
-            case "φ200":
-                color = StrokeColor.Orange;
-                return true;
-
-            case "φ300":
-                color = StrokeColor.Red;
-                return true;
-
-            case "φ400":
-                color = StrokeColor.Purple;
-                return true;
-
-            default:
-                color = default;
-                return false;
-        }
-    }
 
     /// 選択中注釈の範囲をAcrobat風の青枠で描画する。
     private void DrawSelectionAdorner(
@@ -3455,7 +4138,8 @@ public partial class MainWindow : Window
                     DrawingCanvas.ActualHeight,
                     _pdfPageWidth,
                     _pdfPageHeight),
-            GetCurrentCanvasScale());
+            GetCurrentCanvasScale(),
+            IsTextAnnotationVisible);
     }
 
     /// TextServiceで確定した文字注釈をUndo履歴へ登録する。
@@ -3659,6 +4343,25 @@ public partial class MainWindow : Window
                     }
                 }
 
+                break;
+
+            case UndoActionType.EraseStrokeParts:
+                List<StrokeModel>? targetStrokes =
+                    isUndo
+                        ? action.StrokesBefore
+                        : action.StrokesAfter;
+
+                if (targetStrokes == null)
+                {
+                    break;
+                }
+
+                _strokes.Clear();
+                _strokes.AddRange(
+                    targetStrokes);
+
+                ClearStrokeSelection();
+                _textService.ClearSelection();
                 break;
 
             case UndoActionType.EditDiameter:
@@ -4072,6 +4775,18 @@ public partial class MainWindow : Window
             Title =
                 "PDF Markup";
 
+            if (StatusText != null)
+            {
+                StatusText.Text =
+                    "PDFを開いてください";
+            }
+
+            if (SaveStateText != null)
+            {
+                SaveStateText.Text =
+                    "未選択";
+            }
+
             return;
         }
 
@@ -4089,6 +4804,14 @@ public partial class MainWindow : Window
 
         StatusText.Text =
             _currentPdfPath;
+
+        if (SaveStateText != null)
+        {
+            SaveStateText.Text =
+                _isDirty
+                    ? "未保存"
+                    : "保存済み";
+        }
     }
 
     /// 最近使ったPDF一覧を起動画面へ再表示する。
@@ -4115,6 +4838,14 @@ public partial class MainWindow : Window
                 recentFiles.Count == 0
                     ? Visibility.Visible
                     : Visibility.Collapsed;
+        }
+
+        if (ClearRecentFilesButton != null)
+        {
+            ClearRecentFilesButton.Visibility =
+                recentFiles.Count == 0
+                    ? Visibility.Collapsed
+                    : Visibility.Visible;
         }
     }
 
@@ -4153,15 +4884,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        // すでに別PDFを編集中なら、通常の「開く」と同じ保存確認を行う。
-        if (!ConfirmSaveChangesBeforeContinue())
-        {
-            return;
-        }
-
         try
         {
-            OpenPdf(filePath);
+            OpenPdfInAvailableWindow(
+                filePath);
         }
         catch (Exception ex)
         {
@@ -4171,6 +4897,49 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
+    }
+
+    /// 最近使ったPDFを1件だけ履歴から削除する。
+    /// PDFファイル本体は削除しない。
+    private void RemoveRecentFileButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is not Button button ||
+            button.Tag is not string filePath ||
+            string.IsNullOrWhiteSpace(filePath))
+        {
+            return;
+        }
+
+        _settingsService.RemoveRecentFile(
+            filePath);
+
+        RefreshRecentFilesStartPanel();
+
+        e.Handled = true;
+    }
+
+    /// 最近使ったPDF履歴をすべて削除する。
+    /// 実際のPDFファイルは削除しない。
+    private void ClearRecentFilesButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        MessageBoxResult result =
+            MessageBox.Show(
+                "最近使ったPDFの履歴をすべてクリアしますか？\n\nPDFファイル本体は削除されません。",
+                "最近使ったPDFをクリア",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+        if (result != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _settingsService.ClearRecentFiles();
+        RefreshRecentFilesStartPanel();
     }
 
     /// PDFの実際の/Rotate値から、既存のInk座標270度補正が必要か判定する。
@@ -4623,6 +5392,16 @@ public partial class MainWindow : Window
         if (_selectedStroke != null &&
             !IsStrokeVisible(_selectedStroke))
         {
+            ClearStrokeSelection();
+        }
+
+        TextAnnotationModel? selectedText =
+            _textService.SelectedAnnotation;
+
+        if (selectedText != null &&
+            !IsTextAnnotationVisible(selectedText))
+        {
+            _textService.ClearSelection();
             ClearStrokeSelection();
         }
     }
@@ -5499,6 +6278,114 @@ public partial class MainWindow : Window
             selectedItem.PageIndex);
     }
 
+
+    /// <summary>
+    /// 前回終了時の左右パネルの開閉状態と幅を復元する。
+    /// </summary>
+    private void RestorePanelLayout()
+    {
+        SettingsService.PanelLayoutSettings? layout =
+            _settingsService.LoadPanelLayout();
+
+        if (layout == null)
+        {
+            return;
+        }
+
+        double leftWidth =
+            Math.Max(
+                220.0,
+                layout.LeftPanelWidth);
+
+        double rightWidth =
+            Math.Max(
+                260.0,
+                layout.RightPanelWidth);
+
+        _leftPanelOpenWidth =
+            new GridLength(leftWidth);
+
+        _rightPanelOpenWidth =
+            new GridLength(rightWidth);
+
+        _isLeftPanelOpen =
+            layout.IsLeftPanelOpen;
+
+        _isRightPanelOpen =
+            layout.IsRightPanelOpen;
+
+        if (_isLeftPanelOpen)
+        {
+            LeftPanelColumn.MinWidth = 220;
+            LeftPanelColumn.Width = new GridLength(leftWidth);
+            LeftPanelSplitter.IsEnabled = true;
+            ToggleLeftPanelButton.Content =
+                CreateIconContent(
+                    "panel-left-close",
+                    "◀");
+            ToggleLeftPanelButton.ToolTip =
+                "ページ一覧を閉じる";
+        }
+        else
+        {
+            LeftPanelColumn.MinWidth = 0;
+            LeftPanelColumn.Width = new GridLength(0);
+            LeftPanelSplitter.IsEnabled = false;
+            ToggleLeftPanelButton.Content =
+                CreateIconContent(
+                    "panel-left-open",
+                    "▶");
+            ToggleLeftPanelButton.ToolTip =
+                "ページ一覧を開く";
+        }
+
+        if (_isRightPanelOpen)
+        {
+            RightPanelColumn.MinWidth = 260;
+            RightPanelColumn.Width = new GridLength(rightWidth);
+            RightPanelSplitter.IsEnabled = true;
+            ToggleRightPanelButton.Content =
+                CreateIconContent(
+                    "panel-right-close",
+                    "▶");
+            ToggleRightPanelButton.ToolTip =
+                "設定パネルを閉じる";
+        }
+        else
+        {
+            RightPanelColumn.MinWidth = 0;
+            RightPanelColumn.Width = new GridLength(0);
+            RightPanelSplitter.IsEnabled = false;
+            ToggleRightPanelButton.Content =
+                CreateIconContent(
+                    "panel-right-open",
+                    "◀");
+            ToggleRightPanelButton.ToolTip =
+                "設定パネルを開く";
+        }
+    }
+
+    /// <summary>
+    /// 現在の左右パネルの開閉状態と、再度開くときに使用する幅を保存する。
+    /// </summary>
+    private void SavePanelLayout()
+    {
+        double leftWidth =
+            _isLeftPanelOpen && LeftPanelColumn.ActualWidth > 0
+                ? LeftPanelColumn.ActualWidth
+                : _leftPanelOpenWidth.Value;
+
+        double rightWidth =
+            _isRightPanelOpen && RightPanelColumn.ActualWidth > 0
+                ? RightPanelColumn.ActualWidth
+                : _rightPanelOpenWidth.Value;
+
+        _settingsService.SavePanelLayout(
+            _isLeftPanelOpen,
+            Math.Max(220.0, leftWidth),
+            _isRightPanelOpen,
+            Math.Max(260.0, rightWidth));
+    }
 
     /// 左側のページ一覧を開閉する。
     private void ToggleLeftPanelButton_Click(

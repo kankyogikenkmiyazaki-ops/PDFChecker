@@ -224,12 +224,14 @@ public sealed class TextService
     /// </summary>
     public TextAnnotationModel? SelectAnnotationAtPdfPoint(
         int pageIndex,
-        Point pdfPoint)
+        Point pdfPoint,
+        Func<TextAnnotationModel, bool>? isVisible = null)
     {
         TextAnnotationModel? annotation =
             FindAnnotationAtPdfPoint(
                 pageIndex,
-                pdfPoint);
+                pdfPoint,
+                isVisible);
 
         if (annotation == null)
         {
@@ -496,7 +498,8 @@ public sealed class TextService
     /// </summary>
     public TextAnnotationModel? FindAnnotationAtPdfPoint(
         int pageIndex,
-        Point pdfPoint)
+        Point pdfPoint,
+        Func<TextAnnotationModel, bool>? isVisible = null)
     {
         if (!_pageAnnotations.TryGetValue(
                 pageIndex,
@@ -511,6 +514,14 @@ public sealed class TextService
         {
             TextAnnotationModel annotation =
                 annotations[index];
+
+            // 非表示中のモードに属する文字注釈は、
+            // 選択・消しゴムの当たり判定対象から除外する。
+            if (isVisible != null &&
+                !isVisible(annotation))
+            {
+                continue;
+            }
 
             double estimatedWidth =
                 Math.Max(
@@ -557,7 +568,8 @@ public sealed class TextService
         Canvas drawingCanvas,
         int pageIndex,
         Func<Point, Point> pdfToCanvas,
-        double canvasScale)
+        double canvasScale,
+        Func<TextAnnotationModel, bool>? isVisible = null)
     {
         if (!_pageAnnotations.TryGetValue(
                 pageIndex,
@@ -568,6 +580,13 @@ public sealed class TextService
 
         foreach (TextAnnotationModel annotation in annotations)
         {
+            // 朱書き／チェックの表示状態に合わせて文字注釈も非表示にする。
+            if (isVisible != null &&
+                !isVisible(annotation))
+            {
+                continue;
+            }
+
             Point canvasPoint =
                 pdfToCanvas(
                     annotation.PdfPosition);

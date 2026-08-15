@@ -435,6 +435,13 @@
             <Separator />
 
             <StatusBarItem>
+                <TextBlock x:Name="SaveStateText"
+                           Text="未選択" />
+            </StatusBarItem>
+
+            <Separator />
+
+            <StatusBarItem>
                 <TextBlock x:Name="PageText"
                            Text="ページ: -" />
             </StatusBarItem>
@@ -779,34 +786,56 @@
                             <ItemsControl x:Name="RecentFilesItemsControl">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Button Tag="{Binding FullPath}"
-                                                Click="RecentFileButton_Click"
-                                                Margin="0,0,0,7"
-                                                Padding="12,9"
-                                                HorizontalContentAlignment="Stretch"
-                                                Background="White"
-                                                BorderBrush="#CCCCCC"
-                                                BorderThickness="1"
-                                                Cursor="Hand">
+                                        <Grid Margin="0,0,0,7">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
 
-                                            <StackPanel>
-                                                <TextBlock Text="{Binding FileName}"
-                                                           FontSize="14"
-                                                           FontWeight="SemiBold"
-                                                           Foreground="#222222"
-                                                           TextTrimming="CharacterEllipsis" />
+                                            <Button Grid.Column="0"
+                                                    Tag="{Binding FullPath}"
+                                                    Click="RecentFileButton_Click"
+                                                    Padding="12,9"
+                                                    HorizontalContentAlignment="Stretch"
+                                                    Background="White"
+                                                    BorderBrush="#CCCCCC"
+                                                    BorderThickness="1"
+                                                    Cursor="Hand">
 
-                                                <TextBlock Text="{Binding DirectoryPath}"
-                                                           FontSize="11"
-                                                           Foreground="#777777"
-                                                           Margin="0,3,0,0"
-                                                           TextTrimming="CharacterEllipsis" />
-                                            </StackPanel>
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding FileName}"
+                                                               FontSize="14"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="#222222"
+                                                               TextTrimming="CharacterEllipsis" />
 
-                                        </Button>
+                                                    <TextBlock Text="{Binding DirectoryPath}"
+                                                               FontSize="11"
+                                                               Foreground="#777777"
+                                                               Margin="0,3,0,0"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+
+                                            </Button>
+
+                                            <Button Grid.Column="1"
+                                                    Tag="{Binding FullPath}"
+                                                    Content="×"
+                                                    Width="36"
+                                                    Margin="6,0,0,0"
+                                                    ToolTip="最近使ったPDF一覧から削除"
+                                                    Click="RemoveRecentFileButton_Click" />
+                                        </Grid>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+
+                            <Button x:Name="ClearRecentFilesButton"
+                                    Content="履歴をすべてクリア"
+                                    HorizontalAlignment="Left"
+                                    Margin="0,5,0,0"
+                                    Padding="10,5"
+                                    Click="ClearRecentFilesButton_Click" />
 
                         </StackPanel>
 
