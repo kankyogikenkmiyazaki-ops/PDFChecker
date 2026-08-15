@@ -5,6 +5,7 @@ using PdfSharp.Drawing;
 using PdfSharp.Pdf.IO;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
@@ -258,25 +259,30 @@ public sealed class PdfService
         IReadOnlyDictionary<int, IReadOnlyList<StrokeModel>> pageStrokes,
         IReadOnlyDictionary<int, IReadOnlyList<TextAnnotationModel>> pageTextAnnotations)
     {
-        bool hasStrokes =
-            pageStrokes.Values.Any(
-                strokes => strokes.Count > 0);
+        string normalizedSourcePath =
+            Path.GetFullPath(sourcePath);
 
-        bool hasTextAnnotations =
-            pageTextAnnotations.Values.Any(
-                annotations => annotations.Count > 0);
+        string normalizedOutputPath =
+            Path.GetFullPath(outputPath);
 
-        if (!hasStrokes &&
-            !hasTextAnnotations)
+        bool isOverwrite =
+            string.Equals(
+                normalizedSourcePath,
+                normalizedOutputPath,
+                StringComparison.OrdinalIgnoreCase);
+
+        string actualOutputPath =
+            isOverwrite
+                ? CreateTemporarySavePath(normalizedSourcePath)
+                : normalizedOutputPath;
+
+        try
         {
-            throw new InvalidOperationException(
-                "保存する注釈がありません。");
-        }
-
-        using PdfSharpDocument document =
-            PdfReader.Open(
-                sourcePath,
-                PdfDocumentOpenMode.Modify);
+            using (PdfSharpDocument document =
+                PdfReader.Open(
+                    normalizedSourcePath,
+                    PdfDocumentOpenMode.Modify))
+            {
 
         // 元PDFにすでに保存されているPDFMarkup注釈を一度取り除く。
         // これを行わないと、非表示にした注釈や削除した注釈が元PDF側に残る。
@@ -341,8 +347,45 @@ public sealed class PdfService
             }
         }
 
-        // 全ページへの追加が完了してから、一度だけファイルへ保存する。
-        document.Save(outputPath);
+                // 全ページへの追加が完了してから、一度だけファイルへ保存する。
+                document.Save(actualOutputPath);
+            }
+
+            if (isOverwrite)
+            {
+                // 元PDFを直接書き換えず、一時ファイルの保存成功後に置換する。
+                // 保存途中で失敗しても元PDFを残せるようにする。
+                File.Replace(
+                    actualOutputPath,
+                    normalizedSourcePath,
+                    null);
+            }
+        }
+        finally
+        {
+            if (isOverwrite &&
+                File.Exists(actualOutputPath))
+            {
+                File.Delete(actualOutputPath);
+            }
+        }
+    }
+
+    /// 上書き保存用に、元PDFと同じフォルダーへ一時ファイル名を作成する。
+    private static string CreateTemporarySavePath(
+        string sourcePath)
+    {
+        string directory =
+            Path.GetDirectoryName(sourcePath)
+            ?? throw new InvalidOperationException(
+                "PDFの保存先フォルダーを取得できません。");
+
+        string fileName =
+            Path.GetFileNameWithoutExtension(sourcePath);
+
+        return Path.Combine(
+            directory,
+            $".{fileName}.{Guid.NewGuid():N}.tmp.pdf");
     }
 
 
@@ -1464,7 +1507,7 @@ public sealed class PdfService
                     "/Rect",
                     false);
 
-            if (rect.IsEmpty)
+            if (rect.IsZero)
             {
                 continue;
             }

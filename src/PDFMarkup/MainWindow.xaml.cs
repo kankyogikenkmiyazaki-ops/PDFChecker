@@ -108,6 +108,18 @@ public partial class MainWindow : Window
         }
     }
 
+    /// 起動画面の「最近使ったPDF」1件分の表示情報。
+    private sealed class RecentFileItem
+    {
+        public string FullPath { get; init; } = string.Empty;
+
+        public string FileName =>
+            IOPath.GetFileName(FullPath);
+
+        public string DirectoryPath =>
+            IOPath.GetDirectoryName(FullPath) ?? string.Empty;
+    }
+
     // ページ移動コマンド
     private static readonly RoutedCommand PreviousPageCommand = new();
     private static readonly RoutedCommand NextPageCommand = new();    
@@ -116,6 +128,7 @@ public partial class MainWindow : Window
     private readonly PdfService _pdfService = new();
     private readonly DrawingService _drawingService = new();
     private readonly TextService _textService = new();
+    private readonly SettingsService _settingsService = new();
 
     // 現在ページの描画データ
     private readonly List<StrokeModel> _strokes = new();
@@ -168,8 +181,6 @@ public partial class MainWindow : Window
 
     // 選択中注釈のモード表示をコードから同期している間は、
     // 描画ツールへの切替や基本設定の復元を行わない。
-    private bool _isApplyingSelectedStroke;
-
     // 口径ComboBoxをコードから更新している間は、
     // 口径強調表示の再描画を行わない。
     private bool _isUpdatingDiameterSelection;
@@ -229,6 +240,10 @@ public partial class MainWindow : Window
     private string? _currentPdfPath;
     private int _currentPageIndex;
     private int _pageCount;
+
+    // 最後に保存した状態から編集内容が変更されているかを表す。
+    // true の間はタイトルへ * を表示し、終了・別PDF読込時に保存確認を行う。
+    private bool _isDirty;
 
     private double _pdfPageWidth;
     private double _pdfPageHeight;
@@ -346,8 +361,25 @@ public partial class MainWindow : Window
         // ボタン表示とカーソルは初期化処理からまとめて設定する。
         InitializeReplaceableUiVisuals();
 
+        // PDF未選択の起動画面へ、前回までに開いたPDFを表示する。
+        RefreshRecentFilesStartPanel();
+
+        Closing +=
+            MainWindow_Closing;
+
         Closed +=
             MainWindow_Closed;
+    }
+
+    /// ウィンドウを閉じる前に、未保存の編集内容がある場合は保存確認を行う。
+    private void MainWindow_Closing(
+        object? sender,
+        CancelEventArgs e)
+    {
+        if (!ConfirmSaveChangesBeforeContinue())
+        {
+            e.Cancel = true;
+        }
     }
 
     /// ウィンドウ終了時にバックグラウンド処理を停止する。
@@ -372,6 +404,12 @@ public partial class MainWindow : Window
         };
 
         if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        // 別のPDFへ切り替える前に、現在の編集内容を保存するか確認する。
+        if (!ConfirmSaveChangesBeforeContinue())
         {
             return;
         }
@@ -428,14 +466,16 @@ public partial class MainWindow : Window
         DisplayCurrentPage();
         StartThumbnailGeneration();
 
-        string fileName =
-            IOPath.GetFileName(filePath);
+        RegisterRecentFile(
+            filePath);
 
-        Title =
-            $"PDF Markup - {fileName}";
+        if (StartPanel != null)
+        {
+            StartPanel.Visibility =
+                Visibility.Collapsed;
+        }
 
-        StatusText.Text =
-            filePath;
+        SetDirty(false);
     }
 
     /// 現在選択されているページを表示する。
@@ -3456,6 +3496,8 @@ public partial class MainWindow : Window
     {
         _undoActions.Push(action);
         _redoActions.Clear();
+
+        SetDirty(true);
     }
 
     /// 最後の操作を元に戻す。
@@ -3476,6 +3518,7 @@ public partial class MainWindow : Window
             isUndo: true);
 
         _redoActions.Push(action);
+        SetDirty(true);
         RefreshAfterUndoRedo(action);
     }
 
@@ -3495,6 +3538,7 @@ public partial class MainWindow : Window
             isUndo: false);
 
         _undoActions.Push(action);
+        SetDirty(true);
         RefreshAfterUndoRedo(action);
     }
 
@@ -3776,8 +3820,8 @@ public partial class MainWindow : Window
         RedrawStrokes();
     }
 
-    /// 全ページの描画内容を名前を付けて保存する。
-    private void SaveAsMenuItem_Click(
+    /// 現在開いているPDFへ上書き保存する。
+    private void SaveMenuItem_Click(
         object sender,
         RoutedEventArgs e)
     {
@@ -3792,32 +3836,22 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 最後に表示しているページの編集内容も保存対象へ反映する。
-        SaveCurrentPageState();
+        SavePdfToPath(
+            _currentPdfPath,
+            updateCurrentPdfPath: false);
+    }
 
-        // まだ表示していないページも含め、全ページの既存注釈を保存対象へ読み込む。
-        EnsureAllPageAnnotationsLoadedForSave();
-
-        bool hasAnyStrokes =
-            _pageStrokes.Values.Any(
-                strokes => strokes.Any(IsStrokeVisible));
-
-        bool hasAnyTextAnnotations =
-            Enumerable.Range(
-                    0,
-                    _pageCount)
-                .Any(pageIndex =>
-                    _textService
-                        .GetPageAnnotations(
-                            pageIndex)
-                        .Any(IsTextAnnotationVisible));
-
-        if (!hasAnyStrokes &&
-            !hasAnyTextAnnotations)
+    /// 全ページの注釈を名前を付けて保存する。
+    /// 保存成功後は、保存先PDFを現在開いているPDFとして扱う。
+    private void SaveAsMenuItem_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_currentPdfPath))
         {
             MessageBox.Show(
-                "保存する注釈がありません。",
-                "注釈なし",
+                "先にPDFを開いてください。",
+                "PDF未選択",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
 
@@ -3842,6 +3876,33 @@ public partial class MainWindow : Window
         {
             return;
         }
+
+        SavePdfToPath(
+            dialog.FileName,
+            updateCurrentPdfPath: true);
+    }
+
+    /// 現在保持している全ページの線注釈・文字注釈を指定先へ保存する。
+    /// 上書き／別名保存で同じ処理を使用し、保存ロジックの重複を防ぐ。
+    private bool SavePdfToPath(
+        string outputPath,
+        bool updateCurrentPdfPath)
+    {
+        if (string.IsNullOrWhiteSpace(_currentPdfPath))
+        {
+            return false;
+        }
+
+        // 保存処理中に現在パスを変更しないよう、読込元PDFを固定する。
+        string sourcePath =
+            _currentPdfPath;
+
+        // 最後に表示しているページの編集内容も保存対象へ反映する。
+        SaveCurrentPageState();
+
+        // まだ表示していないページも含め、全ページの既存注釈を保存対象へ読み込む。
+        // 注釈をすべて削除した場合でも、既存PDFMarkup注釈の削除結果を保存できる。
+        EnsureAllPageAnnotationsLoadedForSave();
 
         try
         {
@@ -3873,20 +3934,14 @@ public partial class MainWindow : Window
                             IsTextAnnotationVisible)
                         .ToList();
 
-                if (visibleStrokes.Count == 0 &&
-                    visibleTextAnnotations.Count == 0)
-                {
-                    continue;
-                }
-
                 var pageSize =
                     _pdfService.GetPageSize(
-                        _currentPdfPath,
+                        sourcePath,
                         pageIndex);
 
                 PageInfo pageInfo =
                     _pdfService.GetPageInfo(
-                        _currentPdfPath,
+                        sourcePath,
                         pageIndex);
 
                 bool requiresLegacy270InkCorrection =
@@ -3925,22 +3980,194 @@ public partial class MainWindow : Window
             }
 
             _pdfService.SavePdfMarkupAnnotations(
-                _currentPdfPath,
-                dialog.FileName,
+                sourcePath,
+                outputPath,
                 savePageStrokes,
                 savePageTextAnnotations);
 
+            if (updateCurrentPdfPath)
+            {
+                _currentPdfPath =
+                    IOPath.GetFullPath(outputPath);
+
+                RegisterRecentFile(
+                    _currentPdfPath);
+            }
+
+            SetDirty(false);
+
             MessageBox.Show(
-                $"PDFを保存しました。\n\n{dialog.FileName}",
+                $"PDFを保存しました。\n\n{outputPath}",
                 "保存完了",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
+
+            return true;
         }
         catch (Exception ex)
         {
             MessageBox.Show(
                 $"PDFの保存に失敗しました。\n\n{ex.Message}",
                 "保存エラー",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+
+            return false;
+        }
+    }
+
+    /// 未保存状態を更新し、タイトルバーの * 表示を同期する。
+    private void SetDirty(
+        bool isDirty)
+    {
+        _isDirty =
+            isDirty;
+
+        UpdateCurrentPdfWindowInfo();
+    }
+
+    /// 未保存の編集内容がある場合、保存・破棄・キャンセルをユーザーへ確認する。
+    /// 保存成功または「保存しない」ならtrue、キャンセルまたは保存失敗ならfalseを返す。
+    private bool ConfirmSaveChangesBeforeContinue()
+    {
+        if (!_isDirty ||
+            string.IsNullOrWhiteSpace(_currentPdfPath))
+        {
+            return true;
+        }
+
+        string fileName =
+            IOPath.GetFileName(
+                _currentPdfPath);
+
+        MessageBoxResult result =
+            MessageBox.Show(
+                $"{fileName} には保存されていない変更があります。\n\n変更内容を保存しますか？",
+                "変更内容の保存",
+                MessageBoxButton.YesNoCancel,
+                MessageBoxImage.Question);
+
+        if (result == MessageBoxResult.Cancel)
+        {
+            return false;
+        }
+
+        if (result == MessageBoxResult.No)
+        {
+            return true;
+        }
+
+        // 「はい」は現在のPDFへの通常保存として処理する。
+        // 保存に失敗した場合は、終了・ファイル切替を中止する。
+        return SavePdfToPath(
+            _currentPdfPath,
+            updateCurrentPdfPath: false);
+    }
+
+    /// 現在開いているPDFのファイル名とパスをタイトル・ステータスへ反映する。
+    private void UpdateCurrentPdfWindowInfo()
+    {
+        if (string.IsNullOrWhiteSpace(_currentPdfPath))
+        {
+            Title =
+                "PDF Markup";
+
+            return;
+        }
+
+        string fileName =
+            IOPath.GetFileName(
+                _currentPdfPath);
+
+        string dirtyMark =
+            _isDirty
+                ? " *"
+                : string.Empty;
+
+        Title =
+            $"PDF Markup - {fileName}{dirtyMark}";
+
+        StatusText.Text =
+            _currentPdfPath;
+    }
+
+    /// 最近使ったPDF一覧を起動画面へ再表示する。
+    private void RefreshRecentFilesStartPanel()
+    {
+        IReadOnlyList<string> recentFiles =
+            _settingsService.LoadRecentFiles();
+
+        if (RecentFilesItemsControl != null)
+        {
+            RecentFilesItemsControl.ItemsSource =
+                recentFiles
+                    .Select(path =>
+                        new RecentFileItem
+                        {
+                            FullPath = path
+                        })
+                    .ToList();
+        }
+
+        if (RecentFilesEmptyText != null)
+        {
+            RecentFilesEmptyText.Visibility =
+                recentFiles.Count == 0
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+        }
+    }
+
+    /// 指定PDFを最近使ったファイルの先頭へ登録し、起動画面を更新する。
+    private void RegisterRecentFile(
+        string filePath)
+    {
+        _settingsService.AddRecentFile(
+            filePath);
+
+        RefreshRecentFilesStartPanel();
+    }
+
+    /// 起動画面の最近使ったPDFをクリックして開く。
+    private void RecentFileButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (sender is not Button button ||
+            button.Tag is not string filePath ||
+            string.IsNullOrWhiteSpace(filePath))
+        {
+            return;
+        }
+
+        if (!File.Exists(filePath))
+        {
+            RefreshRecentFilesStartPanel();
+
+            MessageBox.Show(
+                "ファイルが見つかりませんでした。最近使ったPDF一覧から除外しました。",
+                "PDFが見つかりません",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+
+            return;
+        }
+
+        // すでに別PDFを編集中なら、通常の「開く」と同じ保存確認を行う。
+        if (!ConfirmSaveChangesBeforeContinue())
+        {
+            return;
+        }
+
+        try
+        {
+            OpenPdf(filePath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"PDFを開けませんでした。\n\n{ex.Message}",
+                "PDF読込エラー",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }

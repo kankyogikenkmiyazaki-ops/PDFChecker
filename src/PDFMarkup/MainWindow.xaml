@@ -251,7 +251,8 @@
                     <Button x:Name="SavePdfButton"
                             Content="保存"
                             ToolTip="現在のPDFを保存"
-                            Style="{StaticResource ToolBarButtonStyle}" />
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="SaveMenuItem_Click" />
 
                     <Button x:Name="SaveAsPdfButton"
                             Content="別名保存"
@@ -682,6 +683,8 @@
             <Border Grid.Column="3"
                     Background="#666666">
 
+                <Grid>
+
                 <ScrollViewer x:Name="PdfViewport"
                               HorizontalScrollBarVisibility="Auto"
                               VerticalScrollBarVisibility="Auto"
@@ -734,6 +737,92 @@
                     </Grid>
 
                 </ScrollViewer>
+
+                <!-- PDF未選択時に表示する最近使ったファイル一覧 -->
+                <Border x:Name="StartPanel"
+                        Background="#F3F3F3"
+                        Padding="36"
+                        Visibility="Visible">
+
+                    <Grid MaxWidth="760"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center">
+
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0"
+                                   Text="PDF Markup"
+                                   FontSize="30"
+                                   FontWeight="SemiBold"
+                                   Foreground="#222222"
+                                   Margin="0,0,0,8" />
+
+                        <TextBlock Grid.Row="1"
+                                   Text="最近使ったPDF"
+                                   FontSize="17"
+                                   FontWeight="SemiBold"
+                                   Foreground="#444444"
+                                   Margin="0,12,0,10" />
+
+                        <StackPanel Grid.Row="2">
+
+                            <TextBlock x:Name="RecentFilesEmptyText"
+                                       Text="最近使ったPDFはありません。"
+                                       Foreground="#777777"
+                                       Margin="4,4,0,12" />
+
+                            <ItemsControl x:Name="RecentFilesItemsControl">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Tag="{Binding FullPath}"
+                                                Click="RecentFileButton_Click"
+                                                Margin="0,0,0,7"
+                                                Padding="12,9"
+                                                HorizontalContentAlignment="Stretch"
+                                                Background="White"
+                                                BorderBrush="#CCCCCC"
+                                                BorderThickness="1"
+                                                Cursor="Hand">
+
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding FileName}"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="#222222"
+                                                           TextTrimming="CharacterEllipsis" />
+
+                                                <TextBlock Text="{Binding DirectoryPath}"
+                                                           FontSize="11"
+                                                           Foreground="#777777"
+                                                           Margin="0,3,0,0"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                        </StackPanel>
+
+                        <Button Grid.Row="3"
+                                Content="PDFを開く..."
+                                Width="130"
+                                Height="34"
+                                HorizontalAlignment="Left"
+                                Margin="0,14,0,0"
+                                Click="OpenPdfMenuItem_Click" />
+
+                    </Grid>
+
+                </Border>
+
+                </Grid>
 
             </Border>
 
