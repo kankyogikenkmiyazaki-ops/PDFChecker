@@ -302,36 +302,59 @@
                     <Separator />
 
                     <!-- 描画操作 -->
-                    <Button x:Name="SelectToolButton"
-                            Content="選択"
-                            ToolTip="注釈選択モード"
-                            Style="{StaticResource ToolBarButtonStyle}"
-                            Click="SelectToolButton_Click" />
-
-                    <Button x:Name="EraserButton"
-                            Content="消しゴム"
-                            ToolTip="消しゴムモードに切り替える"
-                            Style="{StaticResource ToolBarButtonStyle}"
-                            Click="EraserButton_Click" />
-
-                    <Button x:Name="TextToolButton"
-                            Content="A"
-                            ToolTip="テキスト入力モード"
-                            Style="{StaticResource ToolBarButtonStyle}"
-                            FontWeight="Bold"
-                            Click="TextToolButton_Click" />
-
-                    <Separator />
-
                     <TextBlock Text="角度"
                                Margin="4,0,2,0"
                                VerticalAlignment="Center" />
 
                     <CheckBox x:Name="AngleSnapCheckBox"
+                              Margin="6,0,4,0"
                               VerticalAlignment="Center"
-                              ToolTip="角度吸着 ON/OFF (F10)"
+                              Foreground="Black"
+                              ToolTip="角度吸着 ON/OFF (F9)"
                               Checked="AngleSnapCheckBox_Changed"
-                              Unchecked="AngleSnapCheckBox_Changed" />
+                              Unchecked="AngleSnapCheckBox_Changed">
+                        <CheckBox.Template>
+                            <ControlTemplate TargetType="CheckBox">
+                                <Border x:Name="CheckBoxBorder"
+                                        Width="20"
+                                        Height="20"
+                                        Background="White"
+                                        BorderBrush="Black"
+                                        BorderThickness="2"
+                                        CornerRadius="1">
+                                    <TextBlock x:Name="CheckMark"
+                                               Text="✓"
+                                               Foreground="Black"
+                                               FontSize="17"
+                                               FontWeight="Bold"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               Margin="0,-3,0,0"
+                                               Visibility="Collapsed" />
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsChecked"
+                                             Value="True">
+                                        <Setter TargetName="CheckMark"
+                                                Property="Visibility"
+                                                Value="Visible" />
+                                    </Trigger>
+                                    <Trigger Property="IsMouseOver"
+                                             Value="True">
+                                        <Setter TargetName="CheckBoxBorder"
+                                                Property="Background"
+                                                Value="#FFE6E6E6" />
+                                    </Trigger>
+                                    <Trigger Property="IsEnabled"
+                                             Value="False">
+                                        <Setter TargetName="CheckBoxBorder"
+                                                Property="Opacity"
+                                                Value="0.5" />
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </CheckBox.Template>
+                    </CheckBox>
 
                     <ComboBox x:Name="AngleSnapComboBox"
                               Width="55"
@@ -354,9 +377,12 @@
                                Margin="0,0,6,0"
                                VerticalAlignment="Center" />
 
-                    <TextBlock Text="文字サイズ"
-                               Margin="4,0,0,0"
-                               VerticalAlignment="Center" />
+                    <Button x:Name="TextToolButton"
+                            Content="A"
+                            ToolTip="テキスト入力モード"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            FontWeight="Bold"
+                            Click="TextToolButton_Click" />
 
                     <ComboBox x:Name="TextFontSizeComboBox"
                               Width="40"
@@ -384,6 +410,18 @@
                     <TextBlock Text="pt"
                                Margin="0,0,8,0"
                                VerticalAlignment="Center" />
+
+                    <Button x:Name="SelectToolButton"
+                            Content="選択"
+                            ToolTip="注釈選択モード"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="SelectToolButton_Click" />
+
+                    <Button x:Name="EraserButton"
+                            Content="消しゴム"
+                            ToolTip="消しゴムモードに切り替える"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="EraserButton_Click" />
 
                     <Button x:Name="HandToolButton"
                             Content="手"

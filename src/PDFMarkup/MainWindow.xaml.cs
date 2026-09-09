@@ -2884,7 +2884,7 @@ public partial class MainWindow : Window
         object sender,
         KeyEventArgs e)
     {
-        if (e.Key == Key.F10)
+        if (e.Key == Key.F9)
         {
             SetAngleSnapEnabled(!_isAngleSnapEnabled);
             e.Handled = true;
