@@ -516,6 +516,12 @@ public sealed class PdfService
             "/Subtype",
             "/Ink");
 
+        // 印刷時にもInk注釈を表示する。
+        // /F の Printフラグ（値 4）を設定する。
+        annotation.Elements.SetInteger(
+            "/F",
+            4);
+
         double rectX =
             minX - padding;
 

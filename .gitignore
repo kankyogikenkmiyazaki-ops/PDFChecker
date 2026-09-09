@@ -1,0 +1,22 @@
+# C# / .NET build files
+bin/
+obj/
+
+# Visual Studio / VS Code
+.vs/
+.vscode/
+
+# User-specific files
+*.user
+*.suo
+
+# Build output
+Debug/
+Release/
+
+# Temporary files
+*.tmp
+*.log
+
+# Rider
+.idea/
