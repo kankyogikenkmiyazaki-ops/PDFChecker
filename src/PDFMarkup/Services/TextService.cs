@@ -37,6 +37,7 @@ public sealed class TextService
     // 現在選択されている文字注釈とページ。
     private TextAnnotationModel? _selectedAnnotation;
     private int _selectedPageIndex = -1;
+    private readonly HashSet<TextAnnotationModel> _selectedAnnotations = new();
 
     // コメント編集開始時の値。
     private TextAnnotationModel? _commentEditingAnnotation;
@@ -191,6 +192,9 @@ public sealed class TextService
         _selectedAnnotation =
             annotation;
 
+        _selectedAnnotations.Clear();
+        _selectedAnnotations.Add(annotation);
+
         _selectedPageIndex =
             pageIndex;
     }
@@ -202,6 +206,8 @@ public sealed class TextService
     {
         _selectedAnnotation =
             null;
+
+        _selectedAnnotations.Clear();
 
         _selectedPageIndex =
             -1;
@@ -217,6 +223,43 @@ public sealed class TextService
 
         _fontSizeEditingAnnotation =
             null;
+    }
+
+    public bool IsSelected(TextAnnotationModel annotation) =>
+        _selectedAnnotations.Contains(annotation);
+
+    public void ToggleSelection(int pageIndex, TextAnnotationModel annotation)
+    {
+        _selectedPageIndex = pageIndex;
+        if (!_selectedAnnotations.Add(annotation))
+        {
+            _selectedAnnotations.Remove(annotation);
+        }
+
+        _selectedAnnotation = _selectedAnnotations.Count == 1
+            ? _selectedAnnotations.First()
+            : null;
+    }
+
+    public void SetSelection(int pageIndex, IEnumerable<TextAnnotationModel> annotations)
+    {
+        _selectedAnnotations.Clear();
+        foreach (TextAnnotationModel annotation in annotations)
+        {
+            _selectedAnnotations.Add(annotation);
+        }
+
+        _selectedPageIndex = _selectedAnnotations.Count > 0 ? pageIndex : -1;
+        _selectedAnnotation = _selectedAnnotations.Count == 1
+            ? _selectedAnnotations.First()
+            : null;
+    }
+
+    public static Rect GetAnnotationBounds(TextAnnotationModel annotation)
+    {
+        double width = Math.Max(annotation.FontSize, annotation.Text.Length * annotation.FontSize * 0.65);
+        double height = Math.Max(annotation.FontSize, annotation.FontSize * 1.4);
+        return new Rect(annotation.PdfPosition.X, annotation.PdfPosition.Y - height, width, height);
     }
 
     /// <summary>
@@ -619,9 +662,7 @@ public sealed class TextService
                 textBlock);
 
             if (pageIndex == _selectedPageIndex &&
-                ReferenceEquals(
-                    annotation,
-                    _selectedAnnotation))
+                _selectedAnnotations.Contains(annotation))
             {
                 textBlock.Measure(
                     new Size(

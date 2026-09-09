@@ -6,7 +6,10 @@
         Height="850"
         MinWidth="1000"
         MinHeight="600"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        AllowDrop="True"
+        PreviewDragOver="MainWindow_PreviewDragOver"
+        Drop="MainWindow_Drop">
 
     <Window.Resources>
 

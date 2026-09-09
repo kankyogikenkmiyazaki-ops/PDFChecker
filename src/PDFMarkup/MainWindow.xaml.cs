@@ -187,6 +187,11 @@ public partial class MainWindow : Window
 
     // 現在選択されている線注釈。
     private StrokeModel? _selectedStroke;
+    private readonly HashSet<StrokeModel> _selectedStrokes = new();
+    private bool _isRectangleSelecting;
+    private Point _selectionStartPoint;
+    private Rectangle? _selectionRectangle;
+    private bool _selectionStartedWithShift;
 
     // 注釈選択時など、右パネルをコードから更新している間は
     // 編集イベントを選択中注釈へ反映しない。
@@ -586,6 +591,72 @@ public partial class MainWindow : Window
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
         }
+    }
+
+    /// Explorerや起動引数から渡されたPDFを既存のウィンドウ振り分け規則で開く。
+    public void OpenPdfFromExternalPath(string filePath)
+    {
+        if (!File.Exists(filePath) ||
+            !string.Equals(
+                IOPath.GetExtension(filePath),
+                ".pdf",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(
+                "PDFファイルを指定してください。",
+                "PDF読込エラー",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            OpenPdfInAvailableWindow(filePath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"PDFを開けませんでした。\n\n{ex.Message}",
+                "PDF読込エラー",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+    }
+
+    private void MainWindow_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = GetDroppedPdfPath(e.Data) != null
+            ? DragDropEffects.Copy
+            : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void MainWindow_Drop(object sender, DragEventArgs e)
+    {
+        string? filePath = GetDroppedPdfPath(e.Data);
+        if (filePath != null)
+        {
+            OpenPdfFromExternalPath(filePath);
+        }
+
+        e.Handled = true;
+    }
+
+    private static string? GetDroppedPdfPath(IDataObject data)
+    {
+        if (!data.GetDataPresent(DataFormats.FileDrop) ||
+            data.GetData(DataFormats.FileDrop) is not string[] paths)
+        {
+            return null;
+        }
+
+        return paths.FirstOrDefault(path =>
+            File.Exists(path) &&
+            string.Equals(
+                IOPath.GetExtension(path),
+                ".pdf",
+                StringComparison.OrdinalIgnoreCase));
     }
 
     /// 指定PDFを開くためのウィンドウを決定する。
@@ -1417,17 +1488,23 @@ public partial class MainWindow : Window
                     _pdfPageHeight);
 
             TextAnnotationModel? hitText =
-                _textService.SelectAnnotationAtPdfPoint(
+                _textService.FindAnnotationAtPdfPoint(
                     _currentPageIndex,
                     hitPdfPoint,
                     IsTextAnnotationVisible);
 
             if (hitText != null)
             {
-                ClearStrokeSelection();
-
-                ApplySelectedTextToRightPanel(
-                    hitText);
+                if (IsShiftPressed())
+                {
+                    _textService.ToggleSelection(_currentPageIndex, hitText);
+                }
+                else
+                {
+                    ClearStrokeSelection();
+                    _textService.SelectAnnotation(_currentPageIndex, hitText);
+                    ApplySelectedTextToRightPanel(hitText);
+                }
 
                 RedrawStrokes();
             }
@@ -1439,17 +1516,24 @@ public partial class MainWindow : Window
 
                 if (hitStroke != null)
                 {
-                    _textService.ClearSelection();
-
-                    SelectStroke(
-                        hitStroke);
+                    if (IsShiftPressed())
+                    {
+                        if (!_selectedStrokes.Add(hitStroke))
+                        {
+                            _selectedStrokes.Remove(hitStroke);
+                        }
+                        _selectedStroke = _selectedStrokes.Count == 1 ? _selectedStrokes.First() : null;
+                        RedrawStrokes();
+                    }
+                    else
+                    {
+                        _textService.ClearSelection();
+                        SelectStroke(hitStroke);
+                    }
                 }
                 else
                 {
-                    ClearStrokeSelection();
-                    _textService.ClearSelection();
-    
-                    RedrawStrokes();
+                    BeginRectangleSelection(canvasPoint);
                 }
             }
 
@@ -2058,10 +2142,94 @@ public partial class MainWindow : Window
     }
 
     /// 描画中のストロークまたはShift直線プレビューを更新する。
+    private void BeginRectangleSelection(Point startPoint)
+    {
+        _isRectangleSelecting = true;
+        _selectionStartPoint = startPoint;
+        _selectionStartedWithShift = IsShiftPressed();
+        _selectionRectangle = new Rectangle
+        {
+            Stroke = Brushes.DodgerBlue,
+            StrokeThickness = 1.5,
+            Fill = new SolidColorBrush(Color.FromArgb(32, 30, 144, 255)),
+            IsHitTestVisible = false
+        };
+        DrawingCanvas.Children.Add(_selectionRectangle);
+        DrawingCanvas.CaptureMouse();
+    }
+
+    private void UpdateRectangleSelection(Point currentPoint)
+    {
+        if (_selectionRectangle == null) return;
+        double left = Math.Min(_selectionStartPoint.X, currentPoint.X);
+        double top = Math.Min(_selectionStartPoint.Y, currentPoint.Y);
+        _selectionRectangle.Width = Math.Abs(currentPoint.X - _selectionStartPoint.X);
+        _selectionRectangle.Height = Math.Abs(currentPoint.Y - _selectionStartPoint.Y);
+        Canvas.SetLeft(_selectionRectangle, left);
+        Canvas.SetTop(_selectionRectangle, top);
+    }
+
+    private void CompleteRectangleSelection(Point endPoint)
+    {
+        double dragWidth = Math.Abs(endPoint.X - _selectionStartPoint.X);
+        double dragHeight = Math.Abs(endPoint.Y - _selectionStartPoint.Y);
+
+        if (dragWidth < 3.0 && dragHeight < 3.0)
+        {
+            if (!_selectionStartedWithShift)
+            {
+                ClearStrokeSelection();
+                _textService.ClearSelection();
+            }
+
+            EndRectangleSelection();
+            RedrawStrokes();
+            return;
+        }
+
+        bool crossing = endPoint.X < _selectionStartPoint.X;
+        Rect canvasRect = new Rect(_selectionStartPoint, endPoint);
+        _selectedStrokes.Clear();
+        foreach (StrokeModel stroke in _strokes.Where(IsStrokeVisible))
+        {
+            if (stroke.SelectionBounds.IsEmpty) stroke.RecalculateSelectionBounds();
+            Point a = _drawingService.ConvertPdfPointToCanvasPoint(stroke.SelectionBounds.TopLeft, DrawingCanvas.ActualWidth, DrawingCanvas.ActualHeight, _pdfPageWidth, _pdfPageHeight);
+            Point b = _drawingService.ConvertPdfPointToCanvasPoint(stroke.SelectionBounds.BottomRight, DrawingCanvas.ActualWidth, DrawingCanvas.ActualHeight, _pdfPageWidth, _pdfPageHeight);
+            Rect bounds = new Rect(a, b);
+            if (crossing ? canvasRect.IntersectsWith(bounds) : canvasRect.Contains(bounds)) _selectedStrokes.Add(stroke);
+        }
+
+        Rect pdfRect = new Rect(
+            _drawingService.ConvertCanvasPointToPdfPoint(canvasRect.TopLeft, DrawingCanvas.ActualWidth, DrawingCanvas.ActualHeight, _pdfPageWidth, _pdfPageHeight),
+            _drawingService.ConvertCanvasPointToPdfPoint(canvasRect.BottomRight, DrawingCanvas.ActualWidth, DrawingCanvas.ActualHeight, _pdfPageWidth, _pdfPageHeight));
+        IEnumerable<TextAnnotationModel> texts = _textService.GetPageAnnotations(_currentPageIndex).Where(IsTextAnnotationVisible).Where(t => crossing ? pdfRect.IntersectsWith(TextService.GetAnnotationBounds(t)) : pdfRect.Contains(TextService.GetAnnotationBounds(t)));
+        _textService.SetSelection(_currentPageIndex, texts);
+        _selectedStroke = _selectedStrokes.Count == 1 ? _selectedStrokes.First() : null;
+        EndRectangleSelection();
+        RedrawStrokes();
+    }
+
+    private void EndRectangleSelection()
+    {
+        _isRectangleSelecting = false;
+        _selectionRectangle = null;
+        if (DrawingCanvas.IsMouseCaptured)
+        {
+            DrawingCanvas.ReleaseMouseCapture();
+        }
+    }
+
     private void DrawingCanvas_MouseMove(
         object sender,
         MouseEventArgs e)
     {
+        if (_isRectangleSelecting)
+        {
+            UpdateRectangleSelection(e.GetPosition(DrawingCanvas));
+            e.Handled = true;
+            return;
+        }
+
         if (_currentToolMode == ToolMode.Eraser &&
             _isErasing)
         {
@@ -2130,6 +2298,13 @@ public partial class MainWindow : Window
         object sender,
         MouseButtonEventArgs e)
     {
+        if (_isRectangleSelecting)
+        {
+            CompleteRectangleSelection(e.GetPosition(DrawingCanvas));
+            e.Handled = true;
+            return;
+        }
+
         if (_currentToolMode == ToolMode.Eraser &&
             _isErasing)
         {
@@ -2719,6 +2894,7 @@ public partial class MainWindow : Window
     private void ClearStrokeSelection()
     {
         _selectedStroke = null;
+        _selectedStrokes.Clear();
 
         if (AnnotationCommentTextBox == null)
         {
@@ -3399,6 +3575,8 @@ public partial class MainWindow : Window
         }
 
         _selectedStroke = stroke;
+        _selectedStrokes.Clear();
+        _selectedStrokes.Add(stroke);
         ApplySelectedStrokeToRightPanel(stroke);
         RedrawStrokes();
     }
@@ -4231,11 +4409,12 @@ public partial class MainWindow : Window
             DrawingCanvas.Children.Add(polyline);
         }
 
-        if (_selectedStroke != null &&
-            _strokes.Contains(_selectedStroke) &&
-            IsStrokeVisible(_selectedStroke))
+        foreach (StrokeModel selectedStroke in _selectedStrokes)
         {
-            DrawSelectionAdorner(_selectedStroke);
+            if (_strokes.Contains(selectedStroke) && IsStrokeVisible(selectedStroke))
+            {
+                DrawSelectionAdorner(selectedStroke);
+            }
         }
 
         _textService.RedrawAnnotations(
