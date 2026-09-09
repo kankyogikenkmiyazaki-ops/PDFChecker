@@ -4767,7 +4767,7 @@ public partial class MainWindow : Window
             updateCurrentPdfPath: false);
     }
 
-    /// 現在開いているPDFのファイル名とパスをタイトル・ステータスへ反映する。
+    /// 現在開いているPDFのファイル名をタイトルへ反映する。
     private void UpdateCurrentPdfWindowInfo()
     {
         if (string.IsNullOrWhiteSpace(_currentPdfPath))
@@ -4803,7 +4803,7 @@ public partial class MainWindow : Window
             $"PDF Markup - {fileName}{dirtyMark}";
 
         StatusText.Text =
-            _currentPdfPath;
+            string.Empty;
 
         if (SaveStateText != null)
         {

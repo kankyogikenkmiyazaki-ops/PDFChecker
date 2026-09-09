@@ -134,9 +134,13 @@ Ver1.5は無料公開済み。
 ## Ver1.51
 
 ```text
-状態：修正・改善項目整理開始
+状態：修正・改善を小単位で実装中
 位置づけ：Ver1.5を実際に使った結果と利用者要望を反映する改善版
 ```
+
+実装済み：
+
+- 左下StatusBarのPDFフルパス表示削除
 
 Ver1.51では大規模な再設計より、
 
@@ -193,14 +197,18 @@ WPF Canvas
 
 注意：
 
-このHANDOFF作成環境には `dotnet` コマンドが入っていなかったため、アップロードされたSourceのbuildは今回再実行できていない。
-User側ではVer1.5公開済みだが、Ver1.51作業開始時は改めて現在Repositoryでbuild確認する。
+2026-09-09、通常のOutputPathで `dotnet build PDFMarkup.csproj` 成功（警告0、エラー0）。
 
 ---
 
 # 4. Git基準
 
-今回渡されたZIPには `.git` が含まれていないため、現在のcommitはこのファイルから決め打ちしない。
+2026-09-09のVer1.51実装開始基準：
+
+```text
+branch：main
+基準commit：2f81feb Ver1.51 開発開始準備
+```
 
 Ver1.51再開時に必ず実Repositoryで：
 
@@ -1017,23 +1025,25 @@ PDF保存・再読込確認
 
 ---
 
-# 24. 左下フルパス表示削除 — Ver1.51候補
+# 24. 左下フルパス表示削除 — Ver1.51実装済み
 
-現在 `UpdateCurrentPdfWindowInfo()` で：
+2026-09-09実装済み。
+
+`UpdateCurrentPdfWindowInfo()` では、PDF読込後の `StatusText` を空表示にし、フルパスを画面へ表示しない。
 
 ```csharp
-StatusText.Text = _currentPdfPath;
+StatusText.Text = string.Empty;
 ```
-
-として、StatusBar左下へフルパスを表示している。
 
 無料公開版の記事・説明画像を作る際、ユーザー名やローカルフォルダ構成が写る可能性があり邪魔になる。
 
-【方針決定】
+【実装済み】
 
 > **左下StatusBarのフルPDFパス表示は削除する。**
 
 内部の `_currentPdfPath` は保存・再読込等に必要なので残す。
+
+未選択時の案内とサムネイル生成エラー表示は従来どおり `StatusText` を使用する。保存、最近使ったPDF、複数Window等のパス処理は変更していない。
 
 ファイル名はWindowタイトル：
 
@@ -1411,8 +1421,7 @@ Step 0
  ↓
 
 Step 1
-左下フルパス非表示
-→ 小さく安全、説明記事にもすぐ反映できる
+左下フルパス非表示（実装済み）
  ↓
 
 Step 2
@@ -1599,12 +1608,11 @@ Services/SettingsService.cs
 
 を確認。
 
-Ver1.51で最初に触る候補：
+Ver1.51で次に触る候補：
 
 ```text
-1. 左下フルパス非表示
-2. Zoom改善
-3. Shift角度設定
+1. Zoom改善
+2. Shift角度設定
 ```
 
 利用者要望を先に反映するなら：
@@ -1672,7 +1680,7 @@ Shift直線の角度吸着を選択可能にする
 複数Window描画設定同期
 Window単位同期OFF
 PDF Drag & Drop
-左下フルパス削除
+左下フルパス削除（実装済み）
 チェック18色程度
 フリーハンド複数strokeの1 Ink注釈化PoC
 外部Ink / FreeText互換確認
