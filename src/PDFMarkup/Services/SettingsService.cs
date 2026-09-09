@@ -205,6 +205,24 @@ public sealed class SettingsService
         return LoadSettings().PanelLayout;
     }
 
+    /// <summary>保存済みの角度吸着設定を取得する。</summary>
+    public AngleSnapSettings LoadAngleSnap()
+    {
+        return LoadSettings().AngleSnap ?? new AngleSnapSettings();
+    }
+
+    /// <summary>角度吸着のON/OFFと刻み角度を保存する。</summary>
+    public void SaveAngleSnap(bool isEnabled, double angleIncrement)
+    {
+        AppSettings settings = LoadSettings();
+        settings.AngleSnap = new AngleSnapSettings
+        {
+            IsEnabled = isEnabled,
+            AngleIncrement = Math.Clamp(angleIncrement, 1.0, 90.0)
+        };
+        SaveSettings(settings);
+    }
+
     /// <summary>
     /// 左右パネルの開閉状態と、開いているときの幅を保存する。
     /// </summary>
@@ -338,6 +356,13 @@ public sealed class SettingsService
         public bool IsMaximized { get; set; }
     }
 
+    public sealed class AngleSnapSettings
+    {
+        public bool IsEnabled { get; set; } = true;
+
+        public double AngleIncrement { get; set; } = 45.0;
+    }
+
     /// <summary>
     /// settings.jsonへ保存する設定項目。
     /// </summary>
@@ -348,5 +373,7 @@ public sealed class SettingsService
         public WindowPlacementSettings? WindowPlacement { get; set; }
 
         public PanelLayoutSettings? PanelLayout { get; set; }
+
+        public AngleSnapSettings? AngleSnap { get; set; }
     }
 }

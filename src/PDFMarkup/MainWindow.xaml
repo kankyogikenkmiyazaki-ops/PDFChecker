@@ -302,12 +302,61 @@
                     <Separator />
 
                     <!-- 描画操作 -->
+                    <Button x:Name="SelectToolButton"
+                            Content="選択"
+                            ToolTip="注釈選択モード"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="SelectToolButton_Click" />
+
+                    <Button x:Name="EraserButton"
+                            Content="消しゴム"
+                            ToolTip="消しゴムモードに切り替える"
+                            Style="{StaticResource ToolBarButtonStyle}"
+                            Click="EraserButton_Click" />
+
                     <Button x:Name="TextToolButton"
                             Content="A"
                             ToolTip="テキスト入力モード"
                             Style="{StaticResource ToolBarButtonStyle}"
                             FontWeight="Bold"
                             Click="TextToolButton_Click" />
+
+                    <Separator />
+
+                    <TextBlock Text="角度"
+                               Margin="4,0,2,0"
+                               VerticalAlignment="Center" />
+
+                    <CheckBox x:Name="AngleSnapCheckBox"
+                              VerticalAlignment="Center"
+                              ToolTip="角度吸着 ON/OFF (F10)"
+                              Checked="AngleSnapCheckBox_Changed"
+                              Unchecked="AngleSnapCheckBox_Changed" />
+
+                    <ComboBox x:Name="AngleSnapComboBox"
+                              Width="55"
+                              Height="28"
+                              Margin="4,0,2,0"
+                              VerticalAlignment="Center"
+                              IsEditable="True"
+                              IsTextSearchEnabled="False"
+                              ToolTip="角度吸着の刻み角度（1～90°）"
+                              SelectionChanged="AngleSnapComboBox_SelectionChanged"
+                              LostKeyboardFocus="AngleSnapComboBox_LostKeyboardFocus"
+                              PreviewKeyDown="AngleSnapComboBox_PreviewKeyDown">
+                        <ComboBoxItem Content="15" />
+                        <ComboBoxItem Content="30" />
+                        <ComboBoxItem Content="45" />
+                        <ComboBoxItem Content="90" />
+                    </ComboBox>
+
+                    <TextBlock Text="°"
+                               Margin="0,0,6,0"
+                               VerticalAlignment="Center" />
+
+                    <TextBlock Text="文字サイズ"
+                               Margin="4,0,0,0"
+                               VerticalAlignment="Center" />
 
                     <ComboBox x:Name="TextFontSizeComboBox"
                               Width="40"
@@ -335,18 +384,6 @@
                     <TextBlock Text="pt"
                                Margin="0,0,8,0"
                                VerticalAlignment="Center" />
-
-                    <Button x:Name="SelectToolButton"
-                            Content="選択"
-                            ToolTip="注釈選択モード"
-                            Style="{StaticResource ToolBarButtonStyle}"
-                            Click="SelectToolButton_Click" />
-
-                    <Button x:Name="EraserButton"
-                            Content="消しゴム"
-                            ToolTip="消しゴムモードに切り替える"
-                            Style="{StaticResource ToolBarButtonStyle}"
-                            Click="EraserButton_Click" />
 
                     <Button x:Name="HandToolButton"
                             Content="手"

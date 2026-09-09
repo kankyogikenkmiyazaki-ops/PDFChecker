@@ -21,10 +21,11 @@ public sealed class DrawingService
     private const double BaseArrowHalfWidthPdfPoints = 7.0;
 
 
-    /// 指定された点が8方向に近い場合、最寄りの45度方向へ吸着させる。
-    public Point SnapToEightDirections(
+    /// 指定された点が刻み角度の候補に近い場合、その方向へ吸着させる。
+    public Point SnapToAngleIncrement(
         Point startPoint,
-        Point currentPoint)
+        Point currentPoint,
+        double angleIncrementDegrees)
     {
         double deltaX =
             currentPoint.X - startPoint.X;
@@ -54,10 +55,16 @@ public sealed class DrawingService
             angleDegrees += 360.0;
         }
 
+        double increment =
+            Math.Clamp(
+                angleIncrementDegrees,
+                1.0,
+                90.0);
+
         double snappedAngleDegrees =
             Math.Round(
-                angleDegrees / 45.0) *
-            45.0;
+                angleDegrees / increment) *
+            increment;
 
         if (snappedAngleDegrees >= 360.0)
         {
@@ -70,8 +77,14 @@ public sealed class DrawingService
                     angleDegrees -
                     snappedAngleDegrees));
 
-        if (angleDifference >
-            SnapAngleToleranceDegrees)
+        // 刻みが狭い場合も全角度が強制吸着にならないよう、
+        // 許容幅は候補間隔の1/4までに抑える。45°では従来の±7.5°を維持する。
+        double toleranceDegrees =
+            Math.Min(
+                SnapAngleToleranceDegrees,
+                increment / 4.0);
+
+        if (angleDifference > toleranceDegrees)
         {
             return currentPoint;
         }

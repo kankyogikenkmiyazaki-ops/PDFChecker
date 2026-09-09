@@ -285,6 +285,10 @@ public partial class MainWindow : Window
     // 将来、右パネルの「小・標準・大」などから変更するための倍率。
     private double _arrowUserScale = 1.0;
 
+    private bool _isAngleSnapEnabled = true;
+    private double _angleSnapIncrement = 45.0;
+    private bool _isUpdatingAngleSnapUi;
+
     // 左右パネルの開閉状態と復元用の幅
     private bool _isLeftPanelOpen = true;
     private bool _isRightPanelOpen = true;
@@ -299,6 +303,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+
+        RestoreAngleSnapSettings();
 
         // 前回終了時のウィンドウ位置・サイズを復元する。
         RestoreWindowPlacement();
@@ -1569,6 +1575,17 @@ public partial class MainWindow : Window
                IsControlPressed();
     }
 
+    /// <summary>現在の設定に応じて直線・矢印の終点を角度吸着する。</summary>
+    private Point ApplyAngleSnap(Point endPoint)
+    {
+        return _isAngleSnapEnabled
+            ? _drawingService.SnapToAngleIncrement(
+                _drawingStartCanvasPoint,
+                endPoint,
+                _angleSnapIncrement)
+            : endPoint;
+    }
+
     /// Shift切替時点までのフリーハンド軌跡を保存し、
     /// ストローク開始点からの直線プレビューを開始する。
     private void BeginStraightPreview()
@@ -1657,10 +1674,7 @@ public partial class MainWindow : Window
                 _pdfPageWidth,
                 _pdfPageHeight);
 
-        Point snappedEndPoint =
-            _drawingService.SnapToEightDirections(
-                _drawingStartCanvasPoint,
-                endPoint);
+        Point snappedEndPoint = ApplyAngleSnap(endPoint);
 
         Point endPdfPoint =
             _drawingService.ConvertCanvasPointToPdfPoint(
@@ -1705,10 +1719,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        Point snappedEndPoint =
-            _drawingService.SnapToEightDirections(
-                _drawingStartCanvasPoint,
-                endPoint);
+        Point snappedEndPoint = ApplyAngleSnap(endPoint);
 
         (Point arrowPoint1, Point arrowPoint2) =
             _drawingService.GetStartArrowHeadPoints(
@@ -1882,10 +1893,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        Point displayPoint =
-            _drawingService.SnapToEightDirections(
-                _drawingStartCanvasPoint,
-                currentPoint);
+        Point displayPoint = ApplyAngleSnap(currentPoint);
 
         bool isSnapped =
             Math.Abs(displayPoint.X - currentPoint.X) > 0.01 ||
@@ -2876,6 +2884,13 @@ public partial class MainWindow : Window
         object sender,
         KeyEventArgs e)
     {
+        if (e.Key == Key.F10)
+        {
+            SetAngleSnapEnabled(!_isAngleSnapEnabled);
+            e.Handled = true;
+            return;
+        }
+
         bool isPageInfoShortcut =
             e.Key == Key.I &&
             (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control &&
@@ -3754,6 +3769,101 @@ public partial class MainWindow : Window
         {
             _isUpdatingAnnotationPanel = false;
         }
+    }
+
+    /// 保存済みの角度吸着設定をUIへ復元する。
+    private void RestoreAngleSnapSettings()
+    {
+        SettingsService.AngleSnapSettings settings =
+            _settingsService.LoadAngleSnap();
+
+        _isAngleSnapEnabled = settings.IsEnabled;
+        _angleSnapIncrement = Math.Clamp(settings.AngleIncrement, 1.0, 90.0);
+        UpdateAngleSnapUi();
+    }
+
+    private void UpdateAngleSnapUi()
+    {
+        _isUpdatingAngleSnapUi = true;
+        try
+        {
+            AngleSnapCheckBox.IsChecked = _isAngleSnapEnabled;
+            AngleSnapComboBox.Text = _angleSnapIncrement.ToString(
+                "0.##",
+                CultureInfo.InvariantCulture);
+        }
+        finally
+        {
+            _isUpdatingAngleSnapUi = false;
+        }
+    }
+
+    private void SetAngleSnapEnabled(bool isEnabled)
+    {
+        _isAngleSnapEnabled = isEnabled;
+        UpdateAngleSnapUi();
+        _settingsService.SaveAngleSnap(_isAngleSnapEnabled, _angleSnapIncrement);
+    }
+
+    private void AngleSnapCheckBox_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isUpdatingAngleSnapUi)
+        {
+            return;
+        }
+
+        SetAngleSnapEnabled(AngleSnapCheckBox.IsChecked == true);
+    }
+
+    private void AngleSnapComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_isUpdatingAngleSnapUi)
+        {
+            ApplyAngleSnapIncrementFromComboBox();
+        }
+    }
+
+    private void AngleSnapComboBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        ApplyAngleSnapIncrementFromComboBox();
+    }
+
+    private void AngleSnapComboBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+        {
+            return;
+        }
+
+        ApplyAngleSnapIncrementFromComboBox();
+        Keyboard.ClearFocus();
+        e.Handled = true;
+    }
+
+    private void ApplyAngleSnapIncrementFromComboBox()
+    {
+        if (_isUpdatingAngleSnapUi || AngleSnapComboBox == null)
+        {
+            return;
+        }
+
+        string valueText = AngleSnapComboBox.Text.Trim();
+        bool isValid = decimal.TryParse(
+            valueText,
+            NumberStyles.Number,
+            CultureInfo.InvariantCulture,
+            out decimal value) &&
+            value >= 1m &&
+            value <= 90m &&
+            (decimal.GetBits(value)[3] >> 16 & 0x7F) <= 2;
+
+        if (isValid)
+        {
+            _angleSnapIncrement = (double)value;
+            _settingsService.SaveAngleSnap(_isAngleSnapEnabled, _angleSnapIncrement);
+        }
+
+        UpdateAngleSnapUi();
     }
 
     /// 文字サイズ候補の選択変更を反映する。
