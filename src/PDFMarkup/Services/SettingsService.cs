@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using PDFMarkup.Models;
 
 namespace PDFMarkup.Services;
 
@@ -223,6 +224,50 @@ public sealed class SettingsService
         SaveSettings(settings);
     }
 
+    /// <summary>保存済みの共通描画設定を取得する。</summary>
+    public DrawingSettingsSyncService.Snapshot? LoadDrawingSettings()
+    {
+        DrawingSettingsData? data =
+            LoadSettings().DrawingSettings;
+
+        if (data == null ||
+            !Enum.TryParse(data.Mode, true, out DrawingMode mode) ||
+            !Enum.TryParse(data.MarkupColor, true, out StrokeColor markupColor) ||
+            !Enum.TryParse(data.CheckColor, true, out StrokeColor checkColor))
+        {
+            return null;
+        }
+
+        return new DrawingSettingsSyncService.Snapshot(
+            mode,
+            markupColor,
+            data.MarkupThickness,
+            data.MarkupOpacity,
+            checkColor,
+            data.CheckThickness,
+            data.CheckOpacity,
+            data.Diameter);
+    }
+
+    /// <summary>共通描画設定を既存のsettings.jsonへ保存する。</summary>
+    public void SaveDrawingSettings(
+        DrawingSettingsSyncService.Snapshot snapshot)
+    {
+        AppSettings settings = LoadSettings();
+        settings.DrawingSettings = new DrawingSettingsData
+        {
+            Mode = snapshot.Mode.ToString(),
+            MarkupColor = snapshot.MarkupColor.ToString(),
+            MarkupThickness = snapshot.MarkupThickness,
+            MarkupOpacity = snapshot.MarkupOpacity,
+            CheckColor = snapshot.CheckColor.ToString(),
+            CheckThickness = snapshot.CheckThickness,
+            CheckOpacity = snapshot.CheckOpacity,
+            Diameter = snapshot.Diameter
+        };
+        SaveSettings(settings);
+    }
+
     /// <summary>
     /// 左右パネルの開閉状態と、開いているときの幅を保存する。
     /// </summary>
@@ -363,6 +408,18 @@ public sealed class SettingsService
         public double AngleIncrement { get; set; } = 45.0;
     }
 
+    private sealed class DrawingSettingsData
+    {
+        public string Mode { get; set; } = DrawingMode.Markup.ToString();
+        public string MarkupColor { get; set; } = StrokeColor.Red.ToString();
+        public double MarkupThickness { get; set; } = 1.0;
+        public byte MarkupOpacity { get; set; } = 255;
+        public string CheckColor { get; set; } = StrokeColor.Yellow.ToString();
+        public double CheckThickness { get; set; } = 8.0;
+        public byte CheckOpacity { get; set; } = 96;
+        public string Diameter { get; set; } = "未設定";
+    }
+
     /// <summary>
     /// settings.jsonへ保存する設定項目。
     /// </summary>
@@ -375,5 +432,7 @@ public sealed class SettingsService
         public PanelLayoutSettings? PanelLayout { get; set; }
 
         public AngleSnapSettings? AngleSnap { get; set; }
+
+        public DrawingSettingsData? DrawingSettings { get; set; }
     }
 }

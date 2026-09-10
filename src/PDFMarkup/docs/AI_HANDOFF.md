@@ -941,9 +941,9 @@ Ver1.51の口径一括変更では、
 
 ---
 
-# 22. 複数ウィンドウ間の描画設定同期 — Ver1.51候補
+# 22. 複数ウィンドウ間の描画設定同期 — Ver1.51実装済み／実画面確認待ち
 
-現在、複数PDFは複数 `MainWindow` で開けるが、描画設定は別々。
+複数PDFは複数 `MainWindow` で開き、同一プロセス内の新規描画設定を `DrawingSettingsSyncService` で共有する。別プロセス間では既存の `settings.json` へ共通設定を保存する。
 
 【方針決定】
 
@@ -957,7 +957,7 @@ Ver1.51の口径一括変更では、
 現在使用する描画設定
 ```
 
-を共通化する方向。
+を共通化した。新しく開いたWindowも直前の共通設定を引き継ぐ。起動済みの別プロセスは、ウィンドウがアクティブになった時と描画開始直前に最新設定を読み込む。
 
 どれか1つのWindowで設定を変えると、同期ONのほかのWindowも同じ表示・設定へ変える。
 
@@ -998,17 +998,17 @@ ONへ戻す：
 現在の共通設定へ合わせる
 ```
 
-実装方式候補：
+現在の実装方式：
 
 ```text
-Application全体で共有するDrawingSettingsState
+DrawingSettingsSyncService.Snapshot
 +
-各MainWindowのIsDrawingSettingsSyncEnabled
+変更元Windowを識別するGuidと変更通知
 +
-設定変更通知
+既存settings.jsonへの保存・再読込
 ```
 
-`SettingsService` のファイル監視でリアルタイム同期する方式は避け、同一アプリプロセス内の共有Stateを優先する。
+`SettingsService` のファイル監視は使用しない。ウィンドウ単位の同期ON / OFFは次の作業として未実装。
 
 ---
 
@@ -1627,7 +1627,7 @@ Services/SettingsService.cs
 
 を確認。
 
-Ver1.51で次に触る候補は、描画設定のPreset構造確認または複数ウィンドウ間の描画設定同期。
+Ver1.51で次に触る候補は、ウィンドウ単位の描画設定同期ON / OFF。
 
 利用者要望を先に反映するなら：
 

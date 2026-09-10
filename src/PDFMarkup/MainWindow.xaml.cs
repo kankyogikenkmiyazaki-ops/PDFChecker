@@ -226,6 +226,9 @@ public partial class MainWindow : Window
     // 描画設定UIをコードから更新している間は、
     // スライダー変更を注釈編集として扱わない。
     private bool _isUpdatingDrawingSettingsUi;
+    private readonly Guid _drawingSettingsSyncSourceId = Guid.NewGuid();
+    private bool _isApplyingSharedDrawingSettings;
+    private bool _isDrawingSettingsSyncInitialized;
 
     // 太さスライダーのドラッグを1回のUndoとしてまとめる。
     private StrokeModel? _thicknessEditingStroke;
@@ -463,6 +466,23 @@ public partial class MainWindow : Window
 
         Closed +=
             MainWindow_Closed;
+
+        Activated +=
+            MainWindow_Activated;
+
+        DrawingSettingsSyncService.Changed +=
+            DrawingSettingsSyncService_Changed;
+
+        _isDrawingSettingsSyncInitialized = true;
+
+        if (DrawingSettingsSyncService.Current is { } sharedSettings)
+        {
+            ApplySharedDrawingSettings(sharedSettings);
+        }
+        else
+        {
+            PublishDrawingSettings();
+        }
     }
 
     /// ウィンドウを閉じる前に、未保存の編集内容がある場合は保存確認を行う。
@@ -487,7 +507,21 @@ public partial class MainWindow : Window
         object? sender,
         EventArgs e)
     {
+        DrawingSettingsSyncService.Changed -=
+            DrawingSettingsSyncService_Changed;
+
+        Activated -=
+            MainWindow_Activated;
+
         CancelThumbnailGeneration();
+    }
+
+    /// 別プロセスで保存された最新の新規描画設定を、画面復帰時に取り込む。
+    private void MainWindow_Activated(
+        object? sender,
+        EventArgs e)
+    {
+        RefreshDrawingSettingsFromStorage();
     }
 
     /// <summary>
@@ -1440,6 +1474,11 @@ public partial class MainWindow : Window
         object sender,
         MouseButtonEventArgs e)
     {
+        if (_currentToolMode == ToolMode.Drawing)
+        {
+            RefreshDrawingSettingsFromStorage();
+        }
+
         if (PdfImage.Source == null)
         {
             return;
@@ -3843,6 +3882,12 @@ public partial class MainWindow : Window
 
         // 元データの色は変更せず、画面上の表示だけを更新する。
         RedrawStrokes();
+
+        if (!_isUpdatingAnnotationPanel &&
+            !HasSelectedAnnotations())
+        {
+            PublishDrawingSettings();
+        }
     }
 
     /// コメント入力中の変更を受け取る。
@@ -5904,6 +5949,7 @@ public partial class MainWindow : Window
         UpdateDrawingModeButtonVisuals();
         UpdateDrawingSettingsUi();
         RedrawStrokes();
+        PublishDrawingSettings();
     }
 
     /// 現在の描画モードに応じて、画面の背景色と表示文字を更新する。
@@ -6008,6 +6054,101 @@ public partial class MainWindow : Window
         _lastCheckOpacity = _currentStrokeOpacity;
     }
 
+    /// 同期対象の新規描画設定を他のPDFウィンドウへ通知する。
+    private void PublishDrawingSettings()
+    {
+        if (!_isDrawingSettingsSyncInitialized ||
+            _isApplyingSharedDrawingSettings)
+        {
+            return;
+        }
+
+        SaveCurrentModeSettings();
+
+        DrawingSettingsSyncService.Publish(
+            _drawingSettingsSyncSourceId,
+            new DrawingSettingsSyncService.Snapshot(
+                _currentDrawingMode,
+                _lastMarkupColor,
+                _lastMarkupThickness,
+                _lastMarkupOpacity,
+                _lastCheckColor,
+                _lastCheckThickness,
+                _lastCheckOpacity,
+                GetSelectedDiameter()));
+    }
+
+    /// 他のPDFウィンドウで変更された新規描画設定を反映する。
+    private void DrawingSettingsSyncService_Changed(
+        Guid sourceId,
+        DrawingSettingsSyncService.Snapshot settings)
+    {
+        if (sourceId == _drawingSettingsSyncSourceId)
+        {
+            return;
+        }
+
+        ApplySharedDrawingSettings(settings);
+    }
+
+    private void ApplySharedDrawingSettings(
+        DrawingSettingsSyncService.Snapshot settings)
+    {
+        _isApplyingSharedDrawingSettings = true;
+
+        try
+        {
+            _lastMarkupColor = settings.MarkupColor;
+            _lastMarkupThickness = settings.MarkupThickness;
+            _lastMarkupOpacity = settings.MarkupOpacity;
+            _lastCheckColor = settings.CheckColor;
+            _lastCheckThickness = settings.CheckThickness;
+            _lastCheckOpacity = settings.CheckOpacity;
+            _currentDrawingMode = settings.Mode;
+
+            if (_currentDrawingMode == DrawingMode.Markup)
+            {
+                _currentStrokeColor = _lastMarkupColor;
+                _currentStrokeThickness = _lastMarkupThickness;
+                _currentStrokeOpacity = _lastMarkupOpacity;
+            }
+            else
+            {
+                _currentStrokeColor = _lastCheckColor;
+                _currentStrokeThickness = _lastCheckThickness;
+                _currentStrokeOpacity = _lastCheckOpacity;
+            }
+
+            SelectDiameterInRightPanel(settings.Diameter);
+            ApplyDrawingModeAppearance();
+            UpdateDrawingModeButtonVisuals();
+            UpdateDrawingSettingsUi();
+        }
+        finally
+        {
+            _isApplyingSharedDrawingSettings = false;
+        }
+    }
+
+    private bool HasSelectedAnnotations() =>
+        _selectedStrokes.Count > 0 ||
+        _textService.SelectedAnnotations.Count > 0;
+
+    private void RefreshDrawingSettingsFromStorage()
+    {
+        if (!_isDrawingSettingsSyncInitialized ||
+            _isApplyingSharedDrawingSettings ||
+            HasSelectedAnnotations())
+        {
+            return;
+        }
+
+        if (DrawingSettingsSyncService.LoadLatest() is { } settings)
+        {
+            ApplySharedDrawingSettings(settings);
+        }
+    }
+
     /// 色ボタンのTagに指定された色を現在の描画色へ設定する。
     /// 注釈を選択中の場合は、その注釈の色変更としてUndo履歴へ登録する。
     private void StrokeColorButton_Click(
@@ -6094,6 +6235,7 @@ public partial class MainWindow : Window
 
         SaveCurrentModeSettings();
         UpdateDrawingSettingsUi();
+        PublishDrawingSettings();
     }
 
     /// 太さスライダーのドラッグ開始時に、編集対象と変更前の値を固定する。
@@ -6165,6 +6307,11 @@ public partial class MainWindow : Window
         }
 
         UpdateStrokeSettingPreviews();
+
+        if (!HasSelectedAnnotations())
+        {
+            PublishDrawingSettings();
+        }
     }
 
     /// 太さ変更を1回分のUndo履歴として確定する。
@@ -6292,6 +6439,11 @@ public partial class MainWindow : Window
         }
 
         UpdateStrokeSettingPreviews();
+
+        if (!HasSelectedAnnotations())
+        {
+            PublishDrawingSettings();
+        }
     }
 
     /// 透明度変更を1回分のUndo履歴として確定する。
