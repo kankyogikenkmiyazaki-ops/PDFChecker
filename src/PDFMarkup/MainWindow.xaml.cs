@@ -300,7 +300,7 @@ public partial class MainWindow : Window
     private double _zoomFactor = 1.0;
 
     private const double MinimumZoomFactor = 0.25;
-    private const double MaximumZoomFactor = 5.0;
+    private const double MaximumZoomFactor = 10.0;
     private const double ZoomStep = 1.2;
 
     // 将来、右パネルの「小・標準・大」などから変更するための倍率。
