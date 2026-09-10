@@ -978,8 +978,18 @@
 
                         <StackPanel Margin="12">
 
-                            <TextBlock Text="現在のモード"
-                                       Style="{StaticResource SidePanelSectionTitleStyle}" />
+                            <Grid Margin="0,0,0,8">
+                                <TextBlock Text="現在のモード"
+                                           Margin="0"
+                                           VerticalAlignment="Center"
+                                           Style="{StaticResource SidePanelSectionTitleStyle}" />
+                                <CheckBox x:Name="DrawingSettingsSyncCheckBox"
+                                          Content="同期"
+                                          IsChecked="True"
+                                          HorizontalAlignment="Right"
+                                          VerticalAlignment="Center"
+                                          Click="DrawingSettingsSyncCheckBox_Click" />
+                            </Grid>
 
                             <TextBlock x:Name="CurrentDrawingModeText"
                                        Text="朱書き"

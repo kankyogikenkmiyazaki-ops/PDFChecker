@@ -977,13 +977,13 @@ Undo / Redo
 未保存状態
 ```
 
-さらに各Windowに：
+各Windowの「現在のモード」表示行右側に：
 
 ```text
 描画設定を同期 ON / OFF
 ```
 
-を持たせる案。
+を実装済み。初期値はON。
 
 OFF：
 
@@ -1008,7 +1008,7 @@ DrawingSettingsSyncService.Snapshot
 既存settings.jsonへの保存・再読込
 ```
 
-`SettingsService` のファイル監視は使用しない。ウィンドウ単位の同期ON / OFFは次の作業として未実装。
+`SettingsService` のファイル監視は使用しない。同期OFF中は送受信と `settings.json` 更新を停止し、再度ONにすると保存済みの最新共通設定へ即時に合わせる。
 
 ---
 
@@ -1627,7 +1627,7 @@ Services/SettingsService.cs
 
 を確認。
 
-Ver1.51で次に触る候補は、ウィンドウ単位の描画設定同期ON / OFF。
+Ver1.51で次に触る候補は、フリーハンド複数Strokeを1 Ink注釈として扱うPoC。
 
 利用者要望を先に反映するなら：
 

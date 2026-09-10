@@ -229,6 +229,7 @@ public partial class MainWindow : Window
     private readonly Guid _drawingSettingsSyncSourceId = Guid.NewGuid();
     private bool _isApplyingSharedDrawingSettings;
     private bool _isDrawingSettingsSyncInitialized;
+    private bool _isDrawingSettingsSyncEnabled = true;
 
     // 太さスライダーのドラッグを1回のUndoとしてまとめる。
     private StrokeModel? _thicknessEditingStroke;
@@ -6058,6 +6059,7 @@ public partial class MainWindow : Window
     private void PublishDrawingSettings()
     {
         if (!_isDrawingSettingsSyncInitialized ||
+            !_isDrawingSettingsSyncEnabled ||
             _isApplyingSharedDrawingSettings)
         {
             return;
@@ -6084,6 +6086,11 @@ public partial class MainWindow : Window
         DrawingSettingsSyncService.Snapshot settings)
     {
         if (sourceId == _drawingSettingsSyncSourceId)
+        {
+            return;
+        }
+
+        if (!_isDrawingSettingsSyncEnabled)
         {
             return;
         }
@@ -6137,6 +6144,7 @@ public partial class MainWindow : Window
     private void RefreshDrawingSettingsFromStorage()
     {
         if (!_isDrawingSettingsSyncInitialized ||
+            !_isDrawingSettingsSyncEnabled ||
             _isApplyingSharedDrawingSettings ||
             HasSelectedAnnotations())
         {
@@ -6146,6 +6154,20 @@ public partial class MainWindow : Window
         if (DrawingSettingsSyncService.LoadLatest() is { } settings)
         {
             ApplySharedDrawingSettings(settings);
+        }
+    }
+
+    /// このウィンドウだけ描画設定の同期参加状態を切り替える。
+    private void DrawingSettingsSyncCheckBox_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        _isDrawingSettingsSyncEnabled =
+            DrawingSettingsSyncCheckBox.IsChecked == true;
+
+        if (_isDrawingSettingsSyncEnabled)
+        {
+            RefreshDrawingSettingsFromStorage();
         }
     }
 
