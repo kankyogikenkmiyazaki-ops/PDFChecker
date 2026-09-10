@@ -1148,78 +1148,39 @@ PDF /FreeText Annotation
 
 ---
 
-# 26. フリーハンドがコメント一覧で細かく分かれる問題
+# 26. Ctrlまとめ書き — Ver1.51実装済み
 
-現在はMouseDown～MouseUpごとに1 `StrokeModel` を作り、PDF保存時に1 `StrokeModel` ごとに1 `/Ink` 注釈を作る。
+通常フリーハンドはMouseDown～MouseUpごとに1 `StrokeModel` を作り、従来どおり1 `/Ink` 注釈として保存する。
 
-そのため、手書きで文字を書くと：
-
-```text
-1画目 → 1注釈 / 1コメント
-2画目 → 1注釈 / 1コメント
-3画目 → 1注釈 / 1コメント
-...
-```
-
-となり、Acrobat等のコメント一覧が見づらくなる。
-
-【改善候補】
-
-これは「PDFMarkup上のグループ機能」より、
-
-> **複数の連続フリーハンドストロークを1つのPDF Ink注釈として保存する**
-
-方向を先に検討する。
-
-PDFの `/InkList` 自体は複数のstroke arrayを保持できる形式で、現行 `LoadInkAnnotations()` も `/InkList` 内の各配列を読み取っている。
-
-しかし現行 `AddInkAnnotation()` は：
+Ctrlだけを押した状態でフリーハンドを開始した場合は、Ctrlを離すまでの複数 `StrokeModel` に同じ `InkAnnotationId` を割り当てる。
 
 ```text
-1 StrokeModel
-→ strokeArray 1個
-→ InkListへ1個だけ追加
-→ Annotation 1件
+Ctrl DOWN
+→ Stroke 1 / 2 / 3 ...
+→ Ctrl UP
+→ 1 UndoAction / 1 PDF Ink注釈として確定
 ```
 
-となっている。
+左Ctrl・右Ctrlは同じ扱い。Ctrlだけを押して描かなかった場合は何も作らない。描画途中でCtrlを離した場合は、そのStrokeの終了後に確定する。
 
-【要検証】
+Shiftは直線、Shift+Ctrlは矢印を優先する。Ctrl+Z / Ctrl+P等の既存ショートカットだけではまとめ書きを開始せず、確定待ちのStrokeがある場合はショートカット処理前にグループを確定する。
 
-小さなPoCで：
+【内部構造】
 
-```text
-複数StrokeModel
- ↓
-1 Ink Annotation
- ↓
-InkListへ複数stroke array
-```
+- `StrokeModel.InkAnnotationId` がPDF Ink注釈単位を表す。
+- 通常Strokeは個別ID、Ctrlまとめ書きと同じ `/InkList` から再読込したStrokeは共通IDを持つ。
+- 画面描画は従来どおりStroke単位で行う。
+- クリック・Shift+クリック・囲み選択は同じIDのStrokeを1注釈単位で選択する。
+- Ctrlまとめ書きの追加とグループ削除は、それぞれ1回のUndo / Redoで全Strokeを処理する。
+- 部分消去で分割した点列も元の `InkAnnotationId` を引き継ぐ。
 
-として保存し、
+【PDF保存・再読込】
 
-```text
-PDFMarkup再読込
-Acrobat表示
-Acrobatコメント一覧
-印刷
-削除
-色 / 太さ / 透明度
-```
+`SavePdfMarkupAnnotations()` は同じ `InkAnnotationId` のStrokeをまとめ、`AddInkAnnotation()` が1つの `/Ink` 注釈内の `/InkList` へ複数stroke arrayを追加する。
 
-を確認する。
+`LoadInkAnnotations()` は1つの `/InkList` 内から読み込んだ全Strokeへ同じ新規IDを割り当てる。保存用・表示用の座標変換でもIDを引き継ぐため、再保存時にグループ構造を維持する。
 
-「どこまでを1注釈とするか」は別途仕様決定が必要。
-
-候補：
-
-```text
-一定時間内の連続ストローク
-明示的な確定操作
-描画モード切替まで
-```
-
-自動判定を複雑にしすぎない。
+2026-09-10、通常の `dotnet build` 成功（警告0・エラー0）。実画面でのペンタブ操作、Acrobatコメント一覧、印刷結果は実機確認対象。
 
 ---
 
@@ -1420,7 +1381,7 @@ D. ファイル操作
 
 E. 描画
 16. チェック色を最低18色程度へ増加・調整
-17. フリーハンド複数ストロークを1 Ink注釈へまとめられるかPoC
+17. Ctrlまとめ書きで複数ストロークを1 Ink注釈へまとめる（実装済み）
 
 F. 安全性 / 互換
 18. Acrobat等の既存Ink / FreeTextを含むPDFの保存互換性確認
@@ -1475,14 +1436,14 @@ Step 7
  ↓
 
 Step 8
-フリーハンド複数Stroke = 1 Ink注釈 PoC
+Ctrlまとめ書き：複数Stroke = 1 Ink注釈（実装・build済み、実画面確認待ち）
  ↓
 
 Step 9
 外部Ink / FreeText互換テスト
 ```
 
-Step 8 / 9はPDF保存構造へ触れるため、小さなテストPDFで分離検証してから本体へ入れる。
+Step 9はPDF保存構造と外部注釈へ触れるため、小さなテストPDFで分離検証してから本体へ入れる。
 
 ---
 
@@ -1627,7 +1588,7 @@ Services/SettingsService.cs
 
 を確認。
 
-Ver1.51で次に触る候補は、フリーハンド複数Strokeを1 Ink注釈として扱うPoC。
+Ctrlまとめ書きは本体へ実装済み。次にPDF互換性へ触れる場合は、外部Ink / FreeTextを含むPDFの保存互換性確認を独立して行う。
 
 利用者要望を先に反映するなら：
 
@@ -1695,7 +1656,7 @@ Window単位同期OFF
 PDF Drag & Drop
 左下フルパス削除（実装済み）
 チェック16色（実装済み）
-フリーハンド複数strokeの1 Ink注釈化PoC
+Ctrlまとめ書きによる複数strokeの1 Ink注釈化（実装済み）
 外部Ink / FreeText互換確認
 ```
 

@@ -313,17 +313,16 @@ public sealed class PdfService
                     pageIndex,
                     out IReadOnlyList<StrokeModel>? strokes))
             {
-                foreach (StrokeModel stroke in strokes)
+                foreach (IReadOnlyList<StrokeModel> inkAnnotationStrokes in
+                         strokes
+                             .Where(stroke => stroke.PdfPoints.Count >= 2)
+                             .GroupBy(stroke => stroke.InkAnnotationId)
+                             .Select(group => (IReadOnlyList<StrokeModel>)group.ToList()))
                 {
-                    if (stroke.PdfPoints.Count < 2)
-                    {
-                        continue;
-                    }
-
                     AddInkAnnotation(
                         document,
                         page,
-                        stroke);
+                        inkAnnotationStrokes);
                 }
             }
 
@@ -477,26 +476,28 @@ public sealed class PdfService
             StringComparison.Ordinal);
     }
 
-    /// 1本のストロークからInk注釈を作成する。
+    /// 1つ以上の点列から1つのInk注釈を作成する。
     private static void AddInkAnnotation(
         PdfSharpDocument document,
         PdfSharp.Pdf.PdfPage page,
-        StrokeModel stroke)
+        IReadOnlyList<StrokeModel> strokes)
     {
+        StrokeModel stroke = strokes[0];
+
         double minX =
-            stroke.PdfPoints.Min(
+            strokes.SelectMany(item => item.PdfPoints).Min(
                 point => point.X);
 
         double maxX =
-            stroke.PdfPoints.Max(
+            strokes.SelectMany(item => item.PdfPoints).Max(
                 point => point.X);
 
         double minY =
-            stroke.PdfPoints.Min(
+            strokes.SelectMany(item => item.PdfPoints).Min(
                 point => point.Y);
 
         double maxY =
-            stroke.PdfPoints.Max(
+            strokes.SelectMany(item => item.PdfPoints).Max(
                 point => point.Y);
 
         double padding =
@@ -582,27 +583,30 @@ public sealed class PdfService
         annotation.Elements["/BS"] =
             borderStyle;
 
-        var strokeArray =
-            new PdfSharp.Pdf.PdfArray(
-                document);
-
-        foreach (Point point in stroke.PdfPoints)
-        {
-            strokeArray.Elements.Add(
-                new PdfSharp.Pdf.PdfReal(
-                    point.X));
-
-            strokeArray.Elements.Add(
-                new PdfSharp.Pdf.PdfReal(
-                    point.Y));
-        }
-
         var inkList =
             new PdfSharp.Pdf.PdfArray(
                 document);
 
-        inkList.Elements.Add(
-            strokeArray);
+        foreach (StrokeModel inkStroke in strokes)
+        {
+            var strokeArray =
+                new PdfSharp.Pdf.PdfArray(
+                    document);
+
+            foreach (Point point in inkStroke.PdfPoints)
+            {
+                strokeArray.Elements.Add(
+                    new PdfSharp.Pdf.PdfReal(
+                        point.X));
+
+                strokeArray.Elements.Add(
+                    new PdfSharp.Pdf.PdfReal(
+                        point.Y));
+            }
+
+            inkList.Elements.Add(
+                strokeArray);
+        }
 
         annotation.Elements["/InkList"] =
             inkList;
@@ -1139,6 +1143,9 @@ public sealed class PdfService
             string comment =
                 ReadAnnotationComment(annotation);
 
+            Guid inkAnnotationId =
+                Guid.NewGuid();
+
             foreach (var strokeItem in inkList.Elements)
             {
                 if (strokeItem is not PdfSharp.Pdf.PdfArray pointArray)
@@ -1149,6 +1156,7 @@ public sealed class PdfService
                 var stroke =
                     new StrokeModel
                     {
+                        InkAnnotationId = inkAnnotationId,
                         Mode = mode,
                         Color = color,
                         Thickness = thickness,

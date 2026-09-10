@@ -38,9 +38,11 @@ public partial class MainWindow : Window
     private enum UndoActionType
     {
         AddStroke,
+        AddStrokeGroup,
         AddText,
         DeleteText,
         DeleteStroke,
+        DeleteStrokeGroup,
         EraseStrokeParts,
         EditDiameter,
         EditComment,
@@ -70,6 +72,8 @@ public partial class MainWindow : Window
         public List<StrokeModel>? StrokesBefore { get; init; }
 
         public List<StrokeModel>? StrokesAfter { get; init; }
+
+        public List<int>? StrokeIndices { get; init; }
 
         public string OldValue { get; init; } = string.Empty;
 
@@ -183,6 +187,13 @@ public partial class MainWindow : Window
 
     private StrokeModel? _currentStrokeModel;
     private Polyline? _currentStrokeView;
+
+    // Ctrlだけを押して開始したフリーハンドを、Ctrl解除まで1注釈・1操作へまとめる。
+    private Guid? _activeCtrlInkAnnotationId;
+    private readonly List<StrokeModel> _activeCtrlInkStrokes = new();
+    private bool _currentStrokeIsCtrlGrouped;
+    private bool _finalizeCtrlInkAfterCurrentStroke;
+    private int _activeCtrlInkPageIndex = -1;
 
     // 直線・矢印描画時のプレビューに使用するシャドウ線。
     private Line? _shadowLine;
@@ -850,6 +861,11 @@ public partial class MainWindow : Window
         _isDrawing = false;
         _currentStrokeModel = null;
         _currentStrokeView = null;
+        _currentStrokeIsCtrlGrouped = false;
+        _activeCtrlInkStrokes.Clear();
+        _activeCtrlInkAnnotationId = null;
+        _activeCtrlInkPageIndex = -1;
+        _finalizeCtrlInkAfterCurrentStroke = false;
         _zoomFactor = 1.0;
         ClearStrokeSelection();
         _textService.ClearSelection();
@@ -1575,11 +1591,26 @@ public partial class MainWindow : Window
                 {
                     if (IsShiftPressed())
                     {
-                        if (!_selectedStrokes.Add(hitStroke))
+                        List<StrokeModel> annotationStrokes =
+                            GetInkAnnotationStrokes(hitStroke);
+
+                        if (annotationStrokes.All(_selectedStrokes.Contains))
                         {
-                            _selectedStrokes.Remove(hitStroke);
+                            foreach (StrokeModel stroke in annotationStrokes)
+                            {
+                                _selectedStrokes.Remove(stroke);
+                            }
                         }
-                        _selectedStroke = _selectedStrokes.Count == 1 ? _selectedStrokes.First() : null;
+                        else
+                        {
+                            foreach (StrokeModel stroke in annotationStrokes)
+                            {
+                                _selectedStrokes.Add(stroke);
+                            }
+                        }
+
+                        _selectedStroke =
+                            GetSingleSelectedInkAnnotationRepresentative();
                         RedrawStrokes();
                     }
                     else
@@ -1648,6 +1679,36 @@ public partial class MainWindow : Window
         _currentStrokeModel =
             CreateStrokeFromCurrentSettings();
 
+        _currentStrokeIsCtrlGrouped =
+            IsControlPressed() &&
+            !IsShiftPressed();
+
+        if (_currentStrokeIsCtrlGrouped)
+        {
+            if (_activeCtrlInkAnnotationId == null ||
+                _activeCtrlInkPageIndex != _currentPageIndex)
+            {
+                FinalizeCtrlInkGroup();
+                _activeCtrlInkAnnotationId = Guid.NewGuid();
+                _activeCtrlInkPageIndex = _currentPageIndex;
+            }
+
+            _currentStrokeModel.InkAnnotationId =
+                _activeCtrlInkAnnotationId.Value;
+
+            if (_activeCtrlInkStrokes.FirstOrDefault() is { } firstStroke)
+            {
+                // 1つのPDF Ink注釈は色・太さ等を1組だけ持つため、
+                // グループ途中で共有設定が変化しても先頭Strokeの属性へ揃える。
+                _currentStrokeModel.Mode = firstStroke.Mode;
+                _currentStrokeModel.Color = firstStroke.Color;
+                _currentStrokeModel.Thickness = firstStroke.Thickness;
+                _currentStrokeModel.Opacity = firstStroke.Opacity;
+                _currentStrokeModel.Diameter = firstStroke.Diameter;
+                _currentStrokeModel.Comment = firstStroke.Comment;
+            }
+        }
+
         Point pdfPoint =
             _drawingService.ConvertCanvasPointToPdfPoint(
                 canvasPoint,
@@ -1707,6 +1768,28 @@ public partial class MainWindow : Window
     {
         return (Keyboard.Modifiers & ModifierKeys.Control) ==
                ModifierKeys.Control;
+    }
+
+    /// <summary>Ctrlまとめ書きを1つのUndo操作として確定する。</summary>
+    private void FinalizeCtrlInkGroup()
+    {
+        if (_activeCtrlInkStrokes.Count > 0)
+        {
+            PushUndoAction(
+                new UndoAction
+                {
+                    Type = UndoActionType.AddStrokeGroup,
+                    StrokesAfter = new List<StrokeModel>(_activeCtrlInkStrokes),
+                    StrokeIndices = _activeCtrlInkStrokes
+                        .Select(stroke => _strokes.IndexOf(stroke))
+                        .ToList()
+                });
+        }
+
+        _activeCtrlInkStrokes.Clear();
+        _activeCtrlInkAnnotationId = null;
+        _activeCtrlInkPageIndex = -1;
+        _finalizeCtrlInkAfterCurrentStroke = false;
     }
 
     /// Ctrl+Shiftが現在押されているか確認する。
@@ -1786,6 +1869,12 @@ public partial class MainWindow : Window
 
         _currentStrokeModel = null;
         _currentStrokeView = null;
+        _currentStrokeIsCtrlGrouped = false;
+
+        if (_finalizeCtrlInkAfterCurrentStroke)
+        {
+            FinalizeCtrlInkGroup();
+        }
 
         if (DrawingCanvas.IsMouseCaptured)
         {
@@ -2247,13 +2336,20 @@ public partial class MainWindow : Window
         bool crossing = endPoint.X < _selectionStartPoint.X;
         Rect canvasRect = new Rect(_selectionStartPoint, endPoint);
         _selectedStrokes.Clear();
-        foreach (StrokeModel stroke in _strokes.Where(IsStrokeVisible))
+        foreach (IGrouping<Guid, StrokeModel> annotationGroup in
+                 _strokes.Where(IsStrokeVisible).GroupBy(stroke => stroke.InkAnnotationId))
         {
-            if (stroke.SelectionBounds.IsEmpty) stroke.RecalculateSelectionBounds();
-            Point a = _drawingService.ConvertPdfPointToCanvasPoint(stroke.SelectionBounds.TopLeft, DrawingCanvas.ActualWidth, DrawingCanvas.ActualHeight, _pdfPageWidth, _pdfPageHeight);
-            Point b = _drawingService.ConvertPdfPointToCanvasPoint(stroke.SelectionBounds.BottomRight, DrawingCanvas.ActualWidth, DrawingCanvas.ActualHeight, _pdfPageWidth, _pdfPageHeight);
-            Rect bounds = new Rect(a, b);
-            if (crossing ? canvasRect.IntersectsWith(bounds) : canvasRect.Contains(bounds)) _selectedStrokes.Add(stroke);
+            bool isMatch = crossing
+                ? annotationGroup.Any(stroke => canvasRect.IntersectsWith(GetStrokeCanvasBounds(stroke)))
+                : annotationGroup.All(stroke => canvasRect.Contains(GetStrokeCanvasBounds(stroke)));
+
+            if (isMatch)
+            {
+                foreach (StrokeModel stroke in annotationGroup)
+                {
+                    _selectedStrokes.Add(stroke);
+                }
+            }
         }
 
         Rect pdfRect = new Rect(
@@ -2261,7 +2357,7 @@ public partial class MainWindow : Window
             _drawingService.ConvertCanvasPointToPdfPoint(canvasRect.BottomRight, DrawingCanvas.ActualWidth, DrawingCanvas.ActualHeight, _pdfPageWidth, _pdfPageHeight));
         IEnumerable<TextAnnotationModel> texts = _textService.GetPageAnnotations(_currentPageIndex).Where(IsTextAnnotationVisible).Where(t => crossing ? pdfRect.IntersectsWith(TextService.GetAnnotationBounds(t)) : pdfRect.Contains(TextService.GetAnnotationBounds(t)));
         _textService.SetSelection(_currentPageIndex, texts);
-        _selectedStroke = _selectedStrokes.Count == 1 ? _selectedStrokes.First() : null;
+        _selectedStroke = GetSingleSelectedInkAnnotationRepresentative();
         EndRectangleSelection();
         RedrawStrokes();
     }
@@ -2274,6 +2370,29 @@ public partial class MainWindow : Window
         {
             DrawingCanvas.ReleaseMouseCapture();
         }
+    }
+
+    private Rect GetStrokeCanvasBounds(StrokeModel stroke)
+    {
+        if (stroke.SelectionBounds.IsEmpty)
+        {
+            stroke.RecalculateSelectionBounds();
+        }
+
+        Point topLeft = _drawingService.ConvertPdfPointToCanvasPoint(
+            stroke.SelectionBounds.TopLeft,
+            DrawingCanvas.ActualWidth,
+            DrawingCanvas.ActualHeight,
+            _pdfPageWidth,
+            _pdfPageHeight);
+        Point bottomRight = _drawingService.ConvertPdfPointToCanvasPoint(
+            stroke.SelectionBounds.BottomRight,
+            DrawingCanvas.ActualWidth,
+            DrawingCanvas.ActualHeight,
+            _pdfPageWidth,
+            _pdfPageHeight);
+
+        return new Rect(topLeft, bottomRight);
     }
 
     private void DrawingCanvas_MouseMove(
@@ -2397,6 +2516,9 @@ public partial class MainWindow : Window
             BeginStraightPreview();
         }
 
+        bool completedAsFreehand =
+            !_isStraightPreviewActive;
+
         if (_isStraightPreviewActive)
         {
             if (IsArrowShortcutPressed())
@@ -2425,17 +2547,37 @@ public partial class MainWindow : Window
         {
             _currentStrokeModel.RecalculateSelectionBounds();
 
-            PushUndoAction(
-                new UndoAction
+            if (_currentStrokeIsCtrlGrouped && completedAsFreehand)
+            {
+                _activeCtrlInkStrokes.Add(_currentStrokeModel);
+                SetDirty(true);
+            }
+            else
+            {
+                // 描画途中でShiftへ切り替えた直線・矢印はCtrlグループへ含めない。
+                if (_currentStrokeIsCtrlGrouped)
                 {
-                    Type = UndoActionType.AddStroke,
-                    Stroke = _currentStrokeModel,
-                    StrokeIndex = _strokes.IndexOf(_currentStrokeModel)
-                });
+                    _currentStrokeModel.InkAnnotationId = Guid.NewGuid();
+                }
+
+                PushUndoAction(
+                    new UndoAction
+                    {
+                        Type = UndoActionType.AddStroke,
+                        Stroke = _currentStrokeModel,
+                        StrokeIndex = _strokes.IndexOf(_currentStrokeModel)
+                    });
+            }
         }
 
         _currentStrokeModel = null;
         _currentStrokeView = null;
+        _currentStrokeIsCtrlGrouped = false;
+
+        if (_finalizeCtrlInkAfterCurrentStroke)
+        {
+            FinalizeCtrlInkGroup();
+        }
 
         RedrawStrokes();
     }
@@ -2912,6 +3054,7 @@ public partial class MainWindow : Window
         var piece =
             new StrokeModel
             {
+                InkAnnotationId = source.InkAnnotationId,
                 Mode = source.Mode,
                 Color = source.Color,
                 Thickness = source.Thickness,
@@ -2975,6 +3118,29 @@ public partial class MainWindow : Window
         object sender,
         KeyEventArgs e)
     {
+        bool releasedControl =
+            e.Key == Key.LeftCtrl ||
+            e.Key == Key.RightCtrl;
+
+        bool otherControlStillPressed =
+            e.Key == Key.LeftCtrl
+                ? Keyboard.IsKeyDown(Key.RightCtrl)
+                : e.Key == Key.RightCtrl && Keyboard.IsKeyDown(Key.LeftCtrl);
+
+        if (releasedControl &&
+            !otherControlStillPressed &&
+            _activeCtrlInkAnnotationId != null)
+        {
+            if (_isDrawing && _currentStrokeIsCtrlGrouped)
+            {
+                _finalizeCtrlInkAfterCurrentStroke = true;
+            }
+            else
+            {
+                FinalizeCtrlInkGroup();
+            }
+        }
+
         if (!_isDrawing ||
             !_isStraightPreviewActive)
         {
@@ -2984,10 +3150,6 @@ public partial class MainWindow : Window
         bool releasedShift =
             e.Key == Key.LeftShift ||
             e.Key == Key.RightShift;
-
-        bool releasedControl =
-            e.Key == Key.LeftCtrl ||
-            e.Key == Key.RightCtrl;
 
         if (!releasedShift &&
             !(releasedControl && _isArrowPreviewActive))
@@ -3117,6 +3279,15 @@ public partial class MainWindow : Window
         object sender,
         KeyEventArgs e)
     {
+        if (_activeCtrlInkAnnotationId != null &&
+            !_isDrawing &&
+            e.Key != Key.LeftCtrl &&
+            e.Key != Key.RightCtrl)
+        {
+            // Ctrl+Z / Ctrl+P等を実行する場合は、描画済みグループを先に確定する。
+            FinalizeCtrlInkGroup();
+        }
+
         if (e.Key == Key.F9)
         {
             SetAngleSnapEnabled(!_isAngleSnapEnabled);
@@ -3580,8 +3751,10 @@ public partial class MainWindow : Window
     private void DeleteStroke(
         StrokeModel stroke)
     {
-        int strokeIndex =
-            _strokes.IndexOf(stroke);
+        List<StrokeModel> annotationStrokes =
+            GetInkAnnotationStrokes(stroke);
+
+        int strokeIndex = _strokes.IndexOf(stroke);
 
         if (strokeIndex < 0)
         {
@@ -3598,14 +3771,25 @@ public partial class MainWindow : Window
 
         CommitCommentEditUndo();
 
-        _strokes.RemoveAt(strokeIndex);
+        List<int> strokeIndices = annotationStrokes
+            .Select(item => _strokes.IndexOf(item))
+            .ToList();
+
+        foreach (StrokeModel annotationStroke in annotationStrokes)
+        {
+            _strokes.Remove(annotationStroke);
+        }
 
         PushUndoAction(
             new UndoAction
             {
-                Type = UndoActionType.DeleteStroke,
+                Type = annotationStrokes.Count == 1
+                    ? UndoActionType.DeleteStroke
+                    : UndoActionType.DeleteStrokeGroup,
                 Stroke = stroke,
-                StrokeIndex = strokeIndex
+                StrokeIndex = strokeIndex,
+                StrokesAfter = annotationStrokes,
+                StrokeIndices = strokeIndices
             });
 
         if (ReferenceEquals(
@@ -3633,9 +3817,31 @@ public partial class MainWindow : Window
 
         _selectedStroke = stroke;
         _selectedStrokes.Clear();
-        _selectedStrokes.Add(stroke);
+        foreach (StrokeModel annotationStroke in GetInkAnnotationStrokes(stroke))
+        {
+            _selectedStrokes.Add(annotationStroke);
+        }
         ApplySelectedStrokeToRightPanel(stroke);
         RedrawStrokes();
+    }
+
+    /// <summary>指定点列と同じPDF Ink注釈に属する全点列を取得する。</summary>
+    private List<StrokeModel> GetInkAnnotationStrokes(StrokeModel stroke)
+    {
+        return _strokes
+            .Where(item => item.InkAnnotationId == stroke.InkAnnotationId)
+            .ToList();
+    }
+
+    /// <summary>選択中のInk注釈が1つだけなら、その代表点列を返す。</summary>
+    private StrokeModel? GetSingleSelectedInkAnnotationRepresentative()
+    {
+        return _selectedStrokes
+            .GroupBy(stroke => stroke.InkAnnotationId)
+            .Take(2)
+            .Count() == 1
+                ? _selectedStrokes.FirstOrDefault()
+                : null;
     }
 
     /// 選択した文字注釈の共通情報を描画設定と右パネルへ反映する。
@@ -4714,6 +4920,48 @@ public partial class MainWindow : Window
 
                 break;
 
+            case UndoActionType.AddStrokeGroup:
+                if (action.StrokesAfter == null ||
+                    action.StrokeIndices == null)
+                {
+                    break;
+                }
+
+                if (isUndo)
+                {
+                    foreach (StrokeModel stroke in action.StrokesAfter)
+                    {
+                        _strokes.Remove(stroke);
+                        _selectedStrokes.Remove(stroke);
+                    }
+
+                    _selectedStroke = null;
+                }
+                else
+                {
+                    for (int index = 0;
+                         index < action.StrokesAfter.Count;
+                         index++)
+                    {
+                        StrokeModel stroke = action.StrokesAfter[index];
+                        if (_strokes.Contains(stroke))
+                        {
+                            continue;
+                        }
+
+                        int insertIndex = Math.Clamp(
+                            index < action.StrokeIndices.Count
+                                ? action.StrokeIndices[index]
+                                : _strokes.Count,
+                            0,
+                            _strokes.Count);
+
+                        _strokes.Insert(insertIndex, stroke);
+                    }
+                }
+
+                break;
+
             case UndoActionType.DeleteStroke:
                 if (action.Stroke == null)
                 {
@@ -4745,6 +4993,42 @@ public partial class MainWindow : Window
                     {
                         ClearStrokeSelection();
                     }
+                }
+
+                break;
+
+            case UndoActionType.DeleteStrokeGroup:
+                if (action.StrokesAfter == null ||
+                    action.StrokeIndices == null)
+                {
+                    break;
+                }
+
+                if (isUndo)
+                {
+                    for (int index = 0;
+                         index < action.StrokesAfter.Count;
+                         index++)
+                    {
+                        StrokeModel stroke = action.StrokesAfter[index];
+                        int insertIndex = Math.Clamp(
+                            index < action.StrokeIndices.Count
+                                ? action.StrokeIndices[index]
+                                : _strokes.Count,
+                            0,
+                            _strokes.Count);
+                        _strokes.Insert(insertIndex, stroke);
+                    }
+                }
+                else
+                {
+                    foreach (StrokeModel stroke in action.StrokesAfter)
+                    {
+                        _strokes.Remove(stroke);
+                        _selectedStrokes.Remove(stroke);
+                    }
+
+                    _selectedStroke = null;
                 }
 
                 break;
@@ -5391,6 +5675,7 @@ public partial class MainWindow : Window
         var converted =
             new StrokeModel
             {
+                InkAnnotationId = source.InkAnnotationId,
                 Mode = source.Mode,
                 Color = source.Color,
                 Thickness = source.Thickness,
@@ -5497,6 +5782,7 @@ public partial class MainWindow : Window
         var converted =
             new StrokeModel
             {
+                InkAnnotationId = source.InkAnnotationId,
                 Mode = source.Mode,
                 Color = source.Color,
                 Thickness = source.Thickness,

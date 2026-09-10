@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Windows;
 
 namespace PDFMarkup.Models;
@@ -8,6 +9,12 @@ namespace PDFMarkup.Models;
 /// </summary>
 public sealed class StrokeModel
 {
+    /// <summary>
+    /// この点列が属するPDF Ink注釈を識別する。
+    /// 同じIDの複数点列は、保存時に1つの/InkListへまとめる。
+    /// </summary>
+    public Guid InkAnnotationId { get; set; } = Guid.NewGuid();
+
     /// <summary>
     /// PDF座標系で記録した描画点を取得する。
     /// </summary>
