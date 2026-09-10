@@ -1004,7 +1004,7 @@
 
                                 <!-- 口径変更時の色連動設定。今回は表示のみ追加する。 -->
                                 <CheckBox x:Name="AutoColorChangeCheckBox"
-                                          Content="自動変更"
+                                          Content="グレー表示"
                                           IsChecked="True"
                                           HorizontalAlignment="Right"
                                           VerticalAlignment="Center"
