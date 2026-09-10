@@ -799,22 +799,7 @@ public sealed class PdfService
     private static (byte Red, byte Green, byte Blue) GetRgb(
         StrokeColor color)
     {
-        return color switch
-        {
-            StrokeColor.Blue => (0, 80, 220),
-            StrokeColor.Green => (0, 150, 70),
-            StrokeColor.Yellow => (255, 230, 0),
-            StrokeColor.Orange => (255, 145, 0),
-            StrokeColor.Pink => (255, 105, 180),
-            StrokeColor.LightBlue => (80, 190, 255),
-            StrokeColor.LightGreen => (100, 220, 120),
-            StrokeColor.Purple => (150, 80, 210),
-            StrokeColor.Brown => (150, 90, 40),
-            StrokeColor.Gray => (120, 120, 120),
-            StrokeColor.Cyan => (0, 210, 210),
-            StrokeColor.Magenta => (220, 0, 180),
-            _ => (220, 0, 0)
-        };
+        return StrokeColorDefinition.GetRgb(color);
     }
 
     /// ページ番号が有効範囲内か確認する。

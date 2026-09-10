@@ -102,8 +102,9 @@ public enum StrokeColor
     Blue,
     Green,
 
-    // チェック10色
+    // チェック色
     Yellow,
+    CheckRed,
     Orange,
     Pink,
     LightBlue,
@@ -112,5 +113,46 @@ public enum StrokeColor
     Brown,
     Gray,
     Cyan,
-    Magenta
+    Magenta,
+    Turquoise,
+    Lime,
+    Coral,
+    Indigo,
+    Olive
+}
+
+/// <summary>
+/// 画面表示・描画・PDF保存で共通使用する色定義。
+/// </summary>
+public static class StrokeColorDefinition
+{
+    public static (byte Red, byte Green, byte Blue) GetRgb(
+        StrokeColor color)
+    {
+        return color switch
+        {
+            StrokeColor.Red => (198, 40, 40),
+            StrokeColor.CheckRed => (229, 57, 53),
+            StrokeColor.Blue => (21, 101, 192),
+            StrokeColor.Green => (46, 125, 50),
+            StrokeColor.Yellow => (255, 224, 0),
+            StrokeColor.Orange => (251, 140, 0),
+            StrokeColor.Purple => (142, 36, 170),
+            StrokeColor.Pink => (236, 64, 122),
+            StrokeColor.LightBlue => (66, 165, 245),
+            StrokeColor.LightGreen => (156, 204, 101),
+            StrokeColor.Brown => (121, 85, 72),
+            StrokeColor.Cyan => (0, 172, 193),
+            StrokeColor.Turquoise => (0, 137, 123),
+            StrokeColor.Lime => (192, 202, 51),
+            StrokeColor.Coral => (255, 112, 67),
+            StrokeColor.Indigo => (57, 73, 171),
+            StrokeColor.Olive => (130, 119, 23),
+
+            // 既存PDFの読込と口径の自動グレー表示用。
+            StrokeColor.Gray => (120, 120, 120),
+            StrokeColor.Magenta => (220, 0, 180),
+            _ => (198, 40, 40)
+        };
+    }
 }

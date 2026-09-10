@@ -1009,38 +1009,41 @@
                                 <Button ToolTip="赤"
                                         Tag="Red"
                                         Style="{StaticResource ColorPaletteButtonStyle}"
-                                        Background="#E53935"
                                         Click="StrokeColorButton_Click" />
 
                                 <Button ToolTip="青"
                                         Tag="Blue"
                                         Style="{StaticResource ColorPaletteButtonStyle}"
-                                        Background="#1E88E5"
                                         Click="StrokeColorButton_Click" />
 
                                 <Button ToolTip="緑"
                                         Tag="Green"
                                         Style="{StaticResource ColorPaletteButtonStyle}"
-                                        Background="#43A047"
                                         Click="StrokeColorButton_Click" />
 
                             </WrapPanel>
 
-                            <!-- チェック用10色 -->
+                            <!-- チェック用16色。背景色は共通色定義から設定する。 -->
                             <WrapPanel x:Name="CheckColorPalette"
                                        Margin="0,0,0,14"
                                        Visibility="Collapsed">
 
-                                <Button ToolTip="黄" Tag="Yellow" Style="{StaticResource ColorPaletteButtonStyle}" Background="#FDD835" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="橙" Tag="Orange" Style="{StaticResource ColorPaletteButtonStyle}" Background="#FB8C00" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="桃" Tag="Pink" Style="{StaticResource ColorPaletteButtonStyle}" Background="#EC407A" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="水色" Tag="LightBlue" Style="{StaticResource ColorPaletteButtonStyle}" Background="#42A5F5" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="黄緑" Tag="LightGreen" Style="{StaticResource ColorPaletteButtonStyle}" Background="#9CCC65" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="紫" Tag="Purple" Style="{StaticResource ColorPaletteButtonStyle}" Background="#8E24AA" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="茶" Tag="Brown" Style="{StaticResource ColorPaletteButtonStyle}" Background="#6D4C41" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="灰" Tag="Gray" Style="{StaticResource ColorPaletteButtonStyle}" Background="#757575" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="シアン" Tag="Cyan" Style="{StaticResource ColorPaletteButtonStyle}" Background="#00ACC1" Click="StrokeColorButton_Click" />
-                                <Button ToolTip="マゼンタ" Tag="Magenta" Style="{StaticResource ColorPaletteButtonStyle}" Background="#D81B60" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="黄" Tag="Yellow" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="赤" Tag="CheckRed" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="青" Tag="Blue" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="緑" Tag="Green" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="オレンジ" Tag="Orange" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="紫" Tag="Purple" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="ピンク" Tag="Pink" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="水色" Tag="LightBlue" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="黄緑" Tag="LightGreen" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="茶" Tag="Brown" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="シアン" Tag="Cyan" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="ターコイズ" Tag="Turquoise" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="ライム" Tag="Lime" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="コーラル" Tag="Coral" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="インディゴ" Tag="Indigo" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
+                                <Button ToolTip="オリーブ" Tag="Olive" Style="{StaticResource ColorPaletteButtonStyle}" Click="StrokeColorButton_Click" />
 
                             </WrapPanel>
 
@@ -1059,7 +1062,7 @@
                                       Y2="0"
                                       HorizontalAlignment="Right"
                                       VerticalAlignment="Center"
-                                      Stroke="#E53935"
+                                      Stroke="#C62828"
                                       StrokeThickness="3"
                                       StrokeStartLineCap="Round"
                                       StrokeEndLineCap="Round" />
@@ -1104,7 +1107,7 @@
                                         Background="#F4F4F4">
 
                                     <Border x:Name="StrokeOpacityPreviewBorder"
-                                            Background="#E53935"
+                                            Background="#C62828"
                                             Opacity="1" />
 
                                 </Border>

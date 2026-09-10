@@ -955,23 +955,11 @@ public sealed class TextService
         StrokeColor color,
         byte opacity)
     {
+        (byte red, byte green, byte blue) =
+            StrokeColorDefinition.GetRgb(color);
+
         Color baseColor =
-            color switch
-            {
-                StrokeColor.Blue => Color.FromRgb(0, 80, 220),
-                StrokeColor.Green => Color.FromRgb(0, 150, 70),
-                StrokeColor.Yellow => Color.FromRgb(255, 230, 0),
-                StrokeColor.Orange => Color.FromRgb(255, 145, 0),
-                StrokeColor.Pink => Color.FromRgb(255, 105, 180),
-                StrokeColor.LightBlue => Color.FromRgb(80, 190, 255),
-                StrokeColor.LightGreen => Color.FromRgb(100, 220, 120),
-                StrokeColor.Purple => Color.FromRgb(150, 80, 210),
-                StrokeColor.Brown => Color.FromRgb(150, 90, 40),
-                StrokeColor.Gray => Color.FromRgb(120, 120, 120),
-                StrokeColor.Cyan => Color.FromRgb(0, 210, 210),
-                StrokeColor.Magenta => Color.FromRgb(220, 0, 180),
-                _ => Color.FromRgb(220, 0, 0)
-            };
+            Color.FromRgb(red, green, blue);
 
         var brush =
             new SolidColorBrush(

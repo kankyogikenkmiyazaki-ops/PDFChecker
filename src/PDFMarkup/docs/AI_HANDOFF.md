@@ -308,22 +308,53 @@ Check   → チェック
 - Blue
 - Green
 
-チェック10色
+チェック16色
 - Yellow
+- CheckRed
+- Blue
+- Green
 - Orange
+- Purple
 - Pink
 - LightBlue
 - LightGreen
-- Purple
 - Brown
-- Gray
 - Cyan
+- Turquoise
+- Lime
+- Coral
+- Indigo
+- Olive
+
+内部互換・自動グレー表示用（チェック色UIには表示しない）
+- Gray
 - Magenta
 ```
 
-Ver1.51候補：
+共通RGB定義は `StrokeColorDefinition.GetRgb()` に集約し、XAMLの色ボタン背景、線・文字の画面描画、PDF保存が同じ定義を参照する。朱書き赤 `Red` は `#C62828`、チェック赤 `CheckRed` は `#E53935` として分離する。青と緑は両モードで共通。
 
-> **チェック色を最低18色程度まで増やし、実PDF上で見分けやすい色へ調整する。**
+チェック色：
+
+```text
+- Yellow      #FFE000
+- CheckRed    #E53935
+- Blue        #1565C0
+- Green       #2E7D32
+- Orange      #FB8C00
+- Purple      #8E24AA
+- Pink        #EC407A
+- LightBlue   #42A5F5
+- LightGreen  #9CCC65
+- Brown       #795548
+- Cyan        #00ACC1
+- Turquoise   #00897B
+- Lime        #C0CA33
+- Coral       #FF7043
+- Indigo      #3949AB
+- Olive       #827717
+```
+
+各色の正確なRGB値はVer1.51仕様書および `StrokeColorDefinition` を正とする。
 
 ## 6.4 TextAnnotationModel
 
@@ -980,13 +1011,13 @@ Application全体で共有するDrawingSettingsState
 
 ---
 
-# 23. チェック色拡張 — Ver1.51候補
+# 23. チェック色拡張 — Ver1.51実装済み
 
-現行チェック色：10色。
+現行チェック色：16色。
 
 【方針決定】
 
-> **最低18色程度まで増やしたい。**
+指定された16色へ整理し、グレー・マゼンタをパレットから除外した。ゴールドは追加せず、オレンジへ一本化した。
 
 ただし数だけ増やすのではなく、
 
@@ -999,14 +1030,14 @@ Application全体で共有するDrawingSettingsState
 
 で見分けやすい色を調整する。
 
-色追加時に必要：
+実装内容：
 
 ```text
 StrokeColor enum追加
-XAML ColorPalette追加
-GetMediaColor / GetRgb等の色変換追加
-PDF保存・再読込確認
-既存PDF互換確認
+XAML CheckColorPaletteを16色へ変更
+StrokeColorDefinitionへRGB値を集約
+画面描画・文字描画・PDF保存で共通定義を使用
+Gray / Magentaは既存PDF読込互換のため内部定義を維持
 ```
 
 ---
@@ -1595,11 +1626,7 @@ Services/SettingsService.cs
 
 を確認。
 
-Ver1.51で次に触る候補：
-
-```text
-1. チェック色の拡張
-```
+Ver1.51で次に触る候補は、描画設定のPreset構造確認または複数ウィンドウ間の描画設定同期。
 
 利用者要望を先に反映するなら：
 
@@ -1666,7 +1693,7 @@ Shift直線の角度吸着を選択可能にする
 Window単位同期OFF
 PDF Drag & Drop
 左下フルパス削除（実装済み）
-チェック18色程度
+チェック16色（実装済み）
 フリーハンド複数strokeの1 Ink注釈化PoC
 外部Ink / FreeText互換確認
 ```
