@@ -43,6 +43,7 @@ public partial class MainWindow : Window
         DeleteText,
         DeleteStroke,
         DeleteStrokeGroup,
+        DeleteSelection,
         EraseStrokeParts,
         EditDiameter,
         EditComment,
@@ -74,6 +75,10 @@ public partial class MainWindow : Window
         public List<StrokeModel>? StrokesAfter { get; init; }
 
         public List<int>? StrokeIndices { get; init; }
+
+        public List<TextAnnotationModel>? TextAnnotations { get; init; }
+
+        public List<int>? TextAnnotationIndices { get; init; }
 
         public string OldValue { get; init; } = string.Empty;
 
@@ -3679,6 +3684,25 @@ public partial class MainWindow : Window
     /// 現在選択されている文字または線注釈を削除する。
     private void DeleteSelectedAnnotation()
     {
+        List<StrokeModel> selectedStrokes = _selectedStrokes
+            .Where(_strokes.Contains)
+            .OrderBy(_strokes.IndexOf)
+            .ToList();
+        List<TextAnnotationModel> selectedTexts = _textService.SelectedAnnotations
+            .ToList();
+        int selectedInkAnnotationCount = selectedStrokes
+            .Select(stroke => stroke.InkAnnotationId)
+            .Distinct()
+            .Count();
+        int selectedAnnotationCount =
+            selectedInkAnnotationCount + selectedTexts.Count;
+
+        if (selectedAnnotationCount > 1)
+        {
+            DeleteSelectedAnnotations(selectedStrokes, selectedTexts);
+            return;
+        }
+
         TextAnnotationModel? selectedText =
             _textService.SelectedAnnotation;
 
@@ -3695,6 +3719,73 @@ public partial class MainWindow : Window
             DeleteStroke(
                 _selectedStroke);
         }
+    }
+
+    /// <summary>囲み選択等で選ばれた複数注釈を、1回のUndo単位で削除する。</summary>
+    private void DeleteSelectedAnnotations(
+        List<StrokeModel> selectedStrokes,
+        List<TextAnnotationModel> selectedTexts)
+    {
+        IReadOnlyList<TextAnnotationModel> pageTexts =
+            _textService.GetPageAnnotations(_currentPageIndex);
+        selectedTexts = selectedTexts
+            .OrderBy(annotation =>
+            {
+                for (int index = 0; index < pageTexts.Count; index++)
+                {
+                    if (ReferenceEquals(pageTexts[index], annotation))
+                    {
+                        return index;
+                    }
+                }
+
+                return int.MaxValue;
+            })
+            .ToList();
+        List<int> strokeIndices = selectedStrokes
+            .Select(stroke => _strokes.IndexOf(stroke))
+            .ToList();
+        List<int> textIndices = selectedTexts
+            .Select(annotation =>
+            {
+                for (int index = 0; index < pageTexts.Count; index++)
+                {
+                    if (ReferenceEquals(pageTexts[index], annotation))
+                    {
+                        return index;
+                    }
+                }
+
+                return -1;
+            })
+            .ToList();
+
+        CommitCommentEditUndo();
+
+        foreach (StrokeModel stroke in selectedStrokes)
+        {
+            _strokes.Remove(stroke);
+        }
+
+        foreach (TextAnnotationModel annotation in selectedTexts)
+        {
+            _textService.RemoveAnnotation(_currentPageIndex, annotation);
+        }
+
+        PushUndoAction(
+            new UndoAction
+            {
+                Type = UndoActionType.DeleteSelection,
+                PageIndex = _currentPageIndex,
+                StrokesAfter = selectedStrokes,
+                StrokeIndices = strokeIndices,
+                TextAnnotations = selectedTexts,
+                TextAnnotationIndices = textIndices
+            });
+
+        ClearStrokeSelection();
+        _textService.ClearSelection();
+        RedrawStrokes();
     }
 
     /// 指定された文字注釈を削除し、Undo履歴へ登録する。
@@ -5031,6 +5122,57 @@ public partial class MainWindow : Window
                     _selectedStroke = null;
                 }
 
+                break;
+
+            case UndoActionType.DeleteSelection:
+                if (action.StrokesAfter == null ||
+                    action.StrokeIndices == null ||
+                    action.TextAnnotations == null ||
+                    action.TextAnnotationIndices == null)
+                {
+                    break;
+                }
+
+                if (isUndo)
+                {
+                    for (int index = 0;
+                         index < action.StrokesAfter.Count;
+                         index++)
+                    {
+                        StrokeModel stroke = action.StrokesAfter[index];
+                        if (!_strokes.Contains(stroke))
+                        {
+                            _strokes.Insert(
+                                Math.Clamp(action.StrokeIndices[index], 0, _strokes.Count),
+                                stroke);
+                        }
+                    }
+
+                    for (int index = 0;
+                         index < action.TextAnnotations.Count;
+                         index++)
+                    {
+                        _textService.InsertAnnotation(
+                            action.PageIndex,
+                            Math.Max(0, action.TextAnnotationIndices[index]),
+                            action.TextAnnotations[index]);
+                    }
+                }
+                else
+                {
+                    foreach (StrokeModel stroke in action.StrokesAfter)
+                    {
+                        _strokes.Remove(stroke);
+                    }
+
+                    foreach (TextAnnotationModel annotation in action.TextAnnotations)
+                    {
+                        _textService.RemoveAnnotation(action.PageIndex, annotation);
+                    }
+                }
+
+                ClearStrokeSelection();
+                _textService.ClearSelection();
                 break;
 
             case UndoActionType.EraseStrokeParts:
