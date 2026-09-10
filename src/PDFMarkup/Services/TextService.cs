@@ -177,6 +177,12 @@ public sealed class TextService
         _selectedAnnotation;
 
     /// <summary>
+    /// 現在選択されているすべての文字注釈を取得する。
+    /// </summary>
+    public IReadOnlyCollection<TextAnnotationModel> SelectedAnnotations =>
+        _selectedAnnotations;
+
+    /// <summary>
     /// 現在選択中の文字注釈が属するページ番号を取得する。
     /// </summary>
     public int SelectedPageIndex =>

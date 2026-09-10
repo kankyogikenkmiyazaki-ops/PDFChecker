@@ -785,15 +785,15 @@ PDFをつかんで移動するHandツールあり。
 
 # 18. 選択 — 現在仕様
 
-現在：
+現在、単独選択に加えて複数選択を保持する：
 
 ```text
 StrokeModel? _selectedStroke
+HashSet<StrokeModel> _selectedStrokes
+TextService._selectedAnnotations
 ```
 
-で、線注釈は1件だけ選択する。
-
-文字注釈も `TextService` 側で1件選択。
+`_selectedStroke` と `TextService.SelectedAnnotation` は、各種類の選択が1件のときだけ既存の単独編集用参照として設定される。
 
 選択した注釈に対して：
 
@@ -810,11 +810,9 @@ StrokeModel? _selectedStroke
 
 Deleteで削除、Escで選択解除。
 
-現在、複数選択用Collectionはない。
-
 ---
 
-# 19. 複数選択 — Ver1.51確認済み／口径一括変更は候補
+# 19. 複数選択・口径一括変更 — Ver1.51実装済み
 
 【確認済み】
 
@@ -841,6 +839,8 @@ Deleteで削除、Escで選択解除。
 ```
 
 通常クリックは単独選択、Shift+クリックは追加／解除。左→右の囲みは完全包含、右→左の囲みは交差・接触で選択する。上下方向は判定に使用しない。線注釈と文字注釈の両方を対象とする。
+
+口径変更は、選択中の線注釈・文字注釈すべてへ一括反映する。線と文字が混在する選択にも対応し、変更前後の口径を対象ごとに保持して1回のUndo / Redoとして扱う。単独選択時は既存の口径変更処理を維持する。
 
 囲み選択：
 
@@ -898,14 +898,14 @@ EditFontSize
 
 ページごとにUndo / Redo Stackを保持する。
 
-Ver1.51で複数選択・一括変更を追加する場合は、
+Ver1.51の口径一括変更では、
 
 ```text
-複数Strokeの変更前Snapshot
-複数Strokeの変更後Snapshot
+選択中のStroke / TextAnnotationごとの変更前口径
+選択中のStroke / TextAnnotationごとの変更後口径
 ```
 
-等を1操作として持てる構造が必要。
+を1つの `UndoAction` にまとめて保持する。
 
 ---
 
@@ -1598,8 +1598,7 @@ Services/SettingsService.cs
 Ver1.51で次に触る候補：
 
 ```text
-1. 選択した注釈の口径一括変更
-2. チェック色の拡張
+1. チェック色の拡張
 ```
 
 利用者要望を先に反映するなら：
@@ -1663,7 +1662,6 @@ Shift直線の角度吸着を選択可能にする
 追加候補：
 
 ```text
-複数選択 → 口径一括変更
 複数Window描画設定同期
 Window単位同期OFF
 PDF Drag & Drop

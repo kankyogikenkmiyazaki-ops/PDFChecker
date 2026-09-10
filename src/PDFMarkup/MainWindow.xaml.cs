@@ -74,6 +74,22 @@ public partial class MainWindow : Window
         public string OldValue { get; init; } = string.Empty;
 
         public string NewValue { get; init; } = string.Empty;
+
+        public List<DiameterChange>? DiameterChanges { get; init; }
+    }
+
+    /// <summary>
+    /// 口径一括変更の対象と変更前後の値を保持する。
+    /// </summary>
+    private sealed class DiameterChange
+    {
+        public StrokeModel? Stroke { get; init; }
+
+        public TextAnnotationModel? TextAnnotation { get; init; }
+
+        public string OldValue { get; init; } = string.Empty;
+
+        public string NewValue { get; init; } = string.Empty;
     }
 
     /// 左側ページ一覧へ表示する1ページ分の情報を保持する。
@@ -3714,7 +3730,71 @@ public partial class MainWindow : Window
             string newDiameter =
                 GetSelectedDiameter();
 
-            if (_textService.TryChangeSelectedDiameter(
+            int selectedCount =
+                _selectedStrokes.Count +
+                _textService.SelectedAnnotations.Count;
+
+            if (selectedCount > 1)
+            {
+                var changes =
+                    new List<DiameterChange>();
+
+                foreach (StrokeModel stroke in _selectedStrokes)
+                {
+                    if (!_strokes.Contains(stroke) ||
+                        string.Equals(
+                            stroke.Diameter,
+                            newDiameter,
+                            StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    changes.Add(
+                        new DiameterChange
+                        {
+                            Stroke = stroke,
+                            OldValue = stroke.Diameter,
+                            NewValue = newDiameter
+                        });
+
+                    stroke.Diameter = newDiameter;
+                }
+
+                foreach (TextAnnotationModel annotation in
+                         _textService.SelectedAnnotations)
+                {
+                    if (string.Equals(
+                            annotation.Diameter,
+                            newDiameter,
+                            StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    changes.Add(
+                        new DiameterChange
+                        {
+                            TextAnnotation = annotation,
+                            OldValue = annotation.Diameter,
+                            NewValue = newDiameter
+                        });
+
+                    annotation.Diameter = newDiameter;
+                }
+
+                if (changes.Count > 0)
+                {
+                    PushUndoAction(
+                        new UndoAction
+                        {
+                            Type = UndoActionType.EditDiameter,
+                            DiameterChanges = changes
+                        });
+                }
+            }
+
+            else if (_textService.TryChangeSelectedDiameter(
                     newDiameter,
                     out string oldTextDiameter))
             {
@@ -4654,6 +4734,28 @@ public partial class MainWindow : Window
                 break;
 
             case UndoActionType.EditDiameter:
+                if (action.DiameterChanges != null)
+                {
+                    foreach (DiameterChange change in action.DiameterChanges)
+                    {
+                        string diameter =
+                            isUndo
+                                ? change.OldValue
+                                : change.NewValue;
+
+                        if (change.TextAnnotation != null)
+                        {
+                            change.TextAnnotation.Diameter = diameter;
+                        }
+                        else if (change.Stroke != null)
+                        {
+                            change.Stroke.Diameter = diameter;
+                        }
+                    }
+
+                    break;
+                }
+
                 if (action.TextAnnotation != null)
                 {
                     action.TextAnnotation.Diameter =
